@@ -1,4 +1,7 @@
+use crate::error::ErrorRepr;
+use crate::Error;
 use crate::{ir, regex::Regex, reserved::*, Visitor};
+
 use arbitrary::{Arbitrary, Unstructured};
 use std::{collections::HashSet, fmt, str::FromStr};
 
@@ -99,7 +102,7 @@ impl FromStr for Grammar {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parsed_ir = ir::bnf::expr(s).map_err(Error::Grammar)?;
+        let parsed_ir = ir::bnf::expr(s).map_err(|e| Error(ErrorRepr::Grammar(e)))?;
         Self::try_from(parsed_ir)
     }
 }
@@ -111,11 +114,11 @@ impl TryFrom<Vec<(String, ir::Expr)>> for Grammar {
         let (mut names, ir_exprs): (Vec<String>, Vec<ir::Expr>) = value.into_iter().unzip();
 
         if let Some(dups) = find_duplicates(&names) {
-            return Err(Error::DuplicateVars(dups));
+            return Err(Error(ErrorRepr::DuplicateVars(dups)));
         }
 
         if let Some(res) = filter_reserved_keywords(&names) {
-            return Err(Error::Reserved(res));
+            return Err(Error(ErrorRepr::Reserved(res)));
         }
 
         names.extend(Predefined::all().map(|s| s.as_str().to_string()));
@@ -136,16 +139,6 @@ fn find_duplicates(names: &[String]) -> Option<HashSet<String>> {
     let mut set: HashSet<String> = names.iter().cloned().collect();
     let dups: HashSet<String> = names.iter().filter(|&n| !set.remove(n)).cloned().collect();
     (!dups.is_empty()).then_some(dups)
-}
-
-/// The type of error that can occur when parsing a grammar.
-#[derive(Debug, PartialEq)]
-pub enum Error {
-    Regex(crate::regex::Error),
-    Grammar(peg::error::ParseError<peg::str::LineCol>),
-    UnkownVar(String),
-    DuplicateVars(HashSet<String>),
-    Reserved(Vec<String>),
 }
 
 #[derive(Debug)]
@@ -224,10 +217,12 @@ impl Expr {
             ir::Expr::Group(x) => Self::Group(Box::new(Self::try_new(*x, names)?)),
             ir::Expr::Reference(name) => match names.iter().position(|n| *n == name) {
                 Some(i) => Self::Reference(i),
-                None => return Err(Error::UnkownVar(name)),
+                None => return Err(Error(ErrorRepr::UnkownVar(name))),
             },
             ir::Expr::Literal(x) => Self::Literal(x),
-            ir::Expr::Regex(r) => Self::Regex(Regex::compile(&r, 10).map_err(Error::Regex)?),
+            ir::Expr::Regex(r) => {
+                Self::Regex(Regex::compile(&r, 10).map_err(|e| Error(ErrorRepr::Regex(e)))?)
+            }
             ir::Expr::Bytes(x) => Self::Bytes(x),
         })
     }
@@ -247,7 +242,7 @@ mod tests {
             let result: Error = x.parse::<Grammar>().unwrap_err();
             assert_eq!(
                 result,
-                Error::DuplicateVars(["x".into()].into_iter().collect())
+                Error(ErrorRepr::DuplicateVars(["x".into()].into_iter().collect()))
             )
         }
 
@@ -258,7 +253,9 @@ mod tests {
             let result: Error = x.parse::<Grammar>().unwrap_err();
             assert_eq!(
                 result,
-                Error::DuplicateVars(["x".into(), "y".into()].into_iter().collect())
+                Error(ErrorRepr::DuplicateVars(
+                    ["x".into(), "y".into()].into_iter().collect()
+                ))
             )
         }
     }
@@ -269,7 +266,7 @@ mod tests {
             let result: Error = x.parse::<Grammar>().unwrap_err();
             assert_eq!(
                 result,
-                Error::Reserved(["u16".into()].into_iter().collect())
+                Error(ErrorRepr::Reserved(["u16".into()].into_iter().collect()))
             )
         }
 
@@ -277,7 +274,7 @@ mod tests {
             let result: Error = x.parse::<Grammar>().unwrap_err();
             assert_eq!(
                 result,
-                Error::Reserved(["String".into()].into_iter().collect())
+                Error(ErrorRepr::Reserved(["String".into()].into_iter().collect()))
             )
         }
     }
