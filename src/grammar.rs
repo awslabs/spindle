@@ -138,6 +138,7 @@ fn find_duplicates(names: &[String]) -> Option<HashSet<String>> {
     (!dups.is_empty()).then_some(dups)
 }
 
+/// The type of error that can occur when parsing a grammar.
 #[derive(Debug, PartialEq)]
 pub enum Error {
     Regex(crate::regex::Error),
