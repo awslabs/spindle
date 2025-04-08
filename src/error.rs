@@ -8,8 +8,8 @@ pub struct Error(pub(crate) ErrorRepr);
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.0 {
-            ErrorRepr::Regex(e) => e.source(),
-            ErrorRepr::Grammar(e) => e.source(),
+            ErrorRepr::Regex(e) => Some(e),
+            ErrorRepr::Grammar(e) => Some(e),
             _ => None,
         }
     }
