@@ -1,13 +1,23 @@
-Spindle is a simple and efficient expression and byte sequence generator to aid fuzz testing parsers and de-serializers.
+# Spindle
+[![Crates.io](https://img.shields.io/crates/v/spindle-lib.svg)](https://crates.io/crates/spindle-lib)
+[![docs.rs](https://docs.rs/spindle-lib/badge.svg)](https://docs.rs/spindle-lib)
+[![License: APACHE](https://img.shields.io/badge/License-Apache-blue.svg)](https://github.com/awslabs/spindle/blob/main/LICENSE)
+![Downloads](https://img.shields.io/crates/d/spindle-lib)
 
-# Usage
-Spindle offers a syntax similar to [Extended Backus–Naur form](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form) which compiles to a state machine --`Grammar`--that produces structured matching arbitrary sentences from an unstructured feed of bytes.
+Spindle is a simple and efficient expression and byte sequence generator to aid fuzz testing parsers and de-serializers. Spindle spins raw, untyped byte buffers into structured data.
 
-Spindle integrates with [libfuzzer](https://llvm.org/docs/LibFuzzer.html) and [cargo-fuzz](https://crates.io/crates/cargo-fuzz): Unstructured bytes, from the [arbitrary](https://crates.io/crates/arbitrary) crate, are manipulated by the fuzzer based on code coverage.
+## Overview
+Spindle's syntax, similar to [Extended Backus–Naur form](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form), lets users define the structure of generated data. This syntax compiles to `Grammar`, a state machine that can be arbitrarily traversed to produce structure-aware, matching expressions.
 
-Spindle can be used to generate database expressions, big decimal strings, JSON, and other syntaxes, as well as slightly malformed variants of correct expressions to test interesting edge cases of parser or de-serializer.
+Spindle works with fuzzers such as [cargo-fuzz](https://crates.io/crates/cargo-fuzz) or [AFL](https://crates.io/crates/afl) because it is an extension of [arbitrary](https://crates.io/crates/arbitrary); the traversal of the state machine is deterministically dependent on [`Unstructured`](https://docs.rs/arbitrary/latest/arbitrary/struct.Unstructured.html).
 
-# Example
+Spindle is particularily useful for generating semi-correct and interesting inputs that attack edge cases of parsers and de-serializers, such as mixing familar tokens in incorrect places or sprinkling in Unicode characters.
+
+Spindle is developed and leveraged by AWS to fuzz test the parsers and de-serializers in their backend systems.
+
+## Examples
+**For more examples, see the [examples](https://github.com/awslabs/spindle/tree/main/examples) folder.**
+
 ```rust
 use spindle_lib::Grammar;
 use arbitrary::Unstructured;
@@ -18,17 +28,36 @@ let math: Grammar = r#"
     symbol : r"-|\+|\*|÷" ;
 "#.parse().unwrap();
 
-let mut u = Unstructured::new(b"poiuyt5r4321sdnlknasdbvcxeygrey");
-let sentence: String = math.expression(&mut u, None).unwrap(); // (30057+(12594+((((25976+(0*0))*0*0)*0)*0)*0*0))
+let mut u = Unstructured::new(b"poiuytasdbvcxeygrey");
+let sentence: String = math.expression(&mut u, None).unwrap();
+// (21359*39933))+13082-62216
 ```
 The state machine traversal always starts at the first rule. In the example, 
 - `expr` is the first rule and evaluates to either `u16`, `paren`, or the concatenation of `expr` and `symbol` and `expr`.
 - `;` delimits different rules.
-- `u16` is a pre-defined data types that directly evaluates to `u16::arbitrary(u)`
+- `u16` is a pre-defined data types that directly evaluates to `u16::arbitrary(u)`.
 - `paren` evaluates to the concatenation of the literal `"("`, `expr`, `symbol`, `expr` and, `")"`.
 - `symbol` evaluates to the an arbitrary string matching the regex `-|\+|\*|÷`.
 
-## Usage in Fuzzer
+### Semi-Correct Expression
+This grammar is similar to the well formed math expression grammar, but sometimes includes an extra closing parenthesis and/or an arbitrary symbol.
+
+```rust
+use spindle_lib::Grammar;
+use arbitrary::Unstructured;
+
+let math: Grammar = r#"
+    expr   : u16 | paren | expr symbol expr ;
+    paren  : "(" expr symbol expr ")" ")"? ;
+    symbol : r"-|\+|\*|÷" | String ;
+"#.parse().unwrap();
+
+let mut u = Unstructured::new(b"poiuytasdbvcxeygrey");
+let sentence: String = math.expression(&mut u, None).unwrap();
+// (44637*32200)Ѱ'x124928390-27338)
+```
+
+### Usage in Fuzzer
 ```rust,ignore
 use spindle_lib::Grammar;
 use libfuzzer_sys::fuzz_target;
@@ -56,13 +85,11 @@ fuzz_target!(|expr: MathExpression| {
 });
 ```
 
-For more examples, see the `examples` folder.
-
-# Pre-defined Rules
+## Pre-defined Rules
 - `String` evaluates to `str::arbitrary(u)`
 - `u16` evaluates to `u16::arbitrary(u)`
 
-# Visitor
+## Visitor
 A `Visitor` is some state that is initialized before traversal and mutated as different rules are visited during the traversal, e.g. `visit_or`. Vistors that are already implemented are `String` and `Vec<u8>` for output buffers, and `u64` for classification. 
 
 Users can use their own implementation of `Visitor`, for example if they want to 
@@ -71,7 +98,7 @@ Users can use their own implementation of `Visitor`, for example if they want to
 - gather data
 - build an abstract syntax tree
 
-## Example
+### Example
 ```rust
 use spindle_lib::{Grammar, Visitor};
 
