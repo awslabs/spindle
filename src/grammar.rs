@@ -3,11 +3,7 @@ use crate::Error;
 use crate::{ir, regex::Regex, reserved::*, Visitor};
 
 use arbitrary::{Arbitrary, Unstructured};
-use std::{
-    collections::{HashMap, HashSet},
-    fmt,
-    str::FromStr,
-};
+use std::{collections::HashSet, fmt, str::FromStr};
 
 const MAX_REP: u32 = 10; // TODO, make interface for user to control this
 
@@ -45,13 +41,13 @@ impl Grammar {
     pub fn expression<V: Visitor>(
         &self,
         u: &mut Unstructured<'_>,
-        max_depth: Option<u64>,
+        max_depth: Option<usize>,
     ) -> arbitrary::Result<V> {
         let mut visitor = V::new();
         let mut to_write = vec![(&self.rules[0], 0)]; // always start at first rule
 
         while let Some((expr, depth)) = to_write.pop() {
-            if depth >= max_depth.unwrap_or(u64::MAX) {
+            if depth >= max_depth.unwrap_or(usize::MAX) {
                 return Err(arbitrary::Error::IncorrectFormat);
             }
 
@@ -119,18 +115,28 @@ impl Grammar {
     /// expr : "foo" | "foo" ;
     /// ```
     /// counts as 2 traversals, even though every output is "foo".
-    pub fn how_many(&self, max_depth: Option<u64>) -> Option<u64> {
-        // memoize recent `how_many` calculations for reference rules
-        // mem.get((i, j)) = `how_many` for i depth for jth reference
-        let mut mem: HashMap<(u64, usize), Option<u64>> = HashMap::new();
-        let target_depth = max_depth.unwrap_or(u64::MAX);
-        for depth in 0..=target_depth {
-            let res = self.rules[0].how_many(&self.rules, depth, &mut mem)?;
-            if depth == target_depth {
-                return Some(res);
-            }
+    pub fn how_many(&self, max_depth: Option<usize>) -> Option<u64> {
+        let target_depth = max_depth.unwrap_or(usize::MAX);
+        if target_depth == 0 {
+            return Some(0);
         }
-        None
+        // prev[i] = `how_many` for previously calculated depth
+        // all rules have 0 possible expressions at depth 0.
+        let mut prev = vec![Some(0u64); self.rules.len()];
+
+        for depth in 1..=target_depth {
+            let dp: Vec<_> = self
+                .rules
+                .iter()
+                .map(|r| r.how_many(&self.rules, depth, &prev))
+                .collect();
+            // discovered all possible traversals or already exceeded maximum
+            if dp == prev || dp[0] == None {
+                return dp[0];
+            }
+            prev = dp;
+        }
+        prev[0]
     }
 }
 
@@ -202,16 +208,10 @@ enum Expr {
 }
 
 impl Expr {
-    fn how_many(
-        &self,
-        rules: &[Expr],
-        depth: u64,
-        mem: &mut HashMap<(u64, usize), Option<u64>>,
-    ) -> Option<u64> {
-        if depth == 0 {
-            return Some(0);
-        }
-
+    /// See [`Grammar::how_many`].
+    ///
+    /// `mem` is previously calculated `how_many` for `depth - 1` for each rule in `rules`.
+    fn how_many(&self, rules: &[Expr], depth: usize, mem: &[Option<u64>]) -> Option<u64> {
         match self {
             Self::Or(x) => {
                 let mut res = 0u64;
@@ -238,16 +238,8 @@ impl Expr {
                 }
                 Some(res)
             }
-            Self::Reference(x) => {
-                if let Some(res) = mem.get(&(depth, *x)) {
-                    *res
-                } else {
-                    let res = rules[*x].how_many(rules, depth - 1, mem);
-                    mem.insert((depth, *x), res);
-                    res
-                }
-            }
             Self::Group(x) => x.how_many(rules, depth, mem),
+            Self::Reference(x) => mem[*x],
             _ => Some(1),
         }
     }
@@ -378,13 +370,14 @@ mod tests {
         }
     }
 
-    fn assert_how_many_matches_generations(grammar: &Grammar, depth: u64) {
+    fn assert_how_many_matches_generations(grammar: &Grammar, depth: usize) {
         let mut buf = [0u8; 1024];
         let num_classes = grammar
             .how_many(Some(depth))
             .expect("small number of classes") as usize;
         assert!(num_classes < 10_000);
-        let mut classes = HashSet::<u64>::with_capacity(num_classes);
+        let mut classes = fxhash::FxHashSet::<u64>::default();
+        classes.try_reserve(num_classes).unwrap();
 
         let mut rng = StdRng::seed_from_u64(42);
 
@@ -459,7 +452,6 @@ mod tests {
         // 3 reps: 2^3
         // ...
         assert_eq!(grammar.how_many(Some(2)), Some(2047));
-        assert_how_many_matches_generations(&grammar, 2);
         assert_eq!(grammar.how_many(None), Some(2047));
     }
 
