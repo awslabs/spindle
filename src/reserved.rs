@@ -1,5 +1,7 @@
+use crate::error::ErrorRepr;
 use crate::Visitor;
 use arbitrary::{Arbitrary, Result, Unstructured};
+use std::str::FromStr;
 use std::sync::LazyLock;
 
 /// Illegal attribute names in a grammar.
@@ -27,7 +29,7 @@ pub(crate) fn filter_reserved_keywords(attrs: &[String]) -> Option<Vec<String>> 
 }
 
 /// Fundemental datatypes that implement `Arbitrary` and evaluate to that implementation.
-#[derive(Debug, enum_iterator::Sequence)]
+#[derive(Debug, PartialEq, Eq, enum_iterator::Sequence)]
 #[allow(non_camel_case_types)]
 pub(crate) enum Predefined {
     /// Reference to an arbitrary `String`.
@@ -56,6 +58,30 @@ impl Predefined {
         match self {
             Self::u16 => "u16",
             Self::String => "String",
+        }
+    }
+}
+
+impl FromStr for Predefined {
+    type Err = ErrorRepr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "u16" => Ok(Self::u16),
+            "String" => Ok(Self::String),
+            _ => Err(ErrorRepr::UnkownVar(String::from(s))),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn str_conversions() {
+        for p in Predefined::all() {
+            assert_eq!(p, Predefined::from_str(p.as_str()).unwrap());
         }
     }
 }

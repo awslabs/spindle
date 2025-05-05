@@ -1,10 +1,11 @@
 use std::str;
 
 /// Defines state that is built during `Grammar::expression`.
+///
 /// This is implemented for
 /// - `String` to produce string expressions
 /// - `Vec<u8>` to produce byte sequences
-/// - `u64` to produce equivalence class IDs of the traversal path.
+/// - `u64` to produce equivalence class IDs of the traversal path. See [`crate::Grammar::how_many`] for more info.
 ///
 /// You can implement this yourself, for example if you want to implement equivalence classes that
 /// - ignore order
