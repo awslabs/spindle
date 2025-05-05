@@ -120,23 +120,27 @@ impl Grammar {
         if target_depth == 0 {
             return Some(0);
         }
-        // prev[i] = `how_many` for previously calculated depth
-        // all rules have 0 possible expressions at depth 0.
+
+        // Use a bottom up approach for calculating the number of traversals:
+        // 1. all rules have 0 traversals at depth 0.
+        // 2. prev[i] == `how_many` for the ith rule at the previously calculated depth.
+        // 3. dp[i] == `how_many` for the ith rule the current depth which depends on `prev`.
+        // 4. finally return `how_many` for the first (start) rule.
         let mut prev = vec![Some(0u64); self.rules.len()];
 
-        for depth in 1..=target_depth {
+        for _ in 1..target_depth {
             let dp: Vec<_> = self
                 .rules
                 .iter()
-                .map(|r| r.how_many(&self.rules, depth, &prev))
+                .map(|r| r.how_many(&self.rules, &prev))
                 .collect();
-            // discovered all possible traversals or already exceeded maximum
+            // discovered all possible or already exceeded `u64::MAX`
             if dp == prev || dp[0] == None {
                 return dp[0];
             }
             prev = dp;
         }
-        prev[0]
+        self.rules[0].how_many(&self.rules, &prev)
     }
 }
 
@@ -211,12 +215,12 @@ impl Expr {
     /// See [`Grammar::how_many`].
     ///
     /// `mem` is previously calculated `how_many` for `depth - 1` for each rule in `rules`.
-    fn how_many(&self, rules: &[Expr], depth: usize, mem: &[Option<u64>]) -> Option<u64> {
+    fn how_many(&self, rules: &[Expr], mem: &[Option<u64>]) -> Option<u64> {
         match self {
             Self::Or(x) => {
                 let mut res = 0u64;
                 for child in x.iter() {
-                    let sub_res = child.how_many(rules, depth, mem)?;
+                    let sub_res = child.how_many(rules, mem)?;
                     res = res.checked_add(sub_res)?;
                 }
                 Some(res)
@@ -224,21 +228,21 @@ impl Expr {
             Self::Concat(x) => {
                 let mut res = 1u64;
                 for child in x.iter() {
-                    let sub_res = child.how_many(rules, depth, mem)?;
+                    let sub_res = child.how_many(rules, mem)?;
                     res = res.checked_mul(sub_res)?;
                 }
                 Some(res)
             }
-            Self::Optional(x) => 1u64.checked_add(x.how_many(rules, depth, mem)?),
+            Self::Optional(x) => 1u64.checked_add(x.how_many(rules, mem)?),
             Self::Repetition(x, min_reps) => {
                 let mut res = 0u64;
-                let sub_res = x.how_many(rules, depth, mem)?;
+                let sub_res = x.how_many(rules, mem)?;
                 for used_rep in *min_reps..=MAX_REP {
                     res = res.checked_add(sub_res.pow(used_rep))?;
                 }
                 Some(res)
             }
-            Self::Group(x) => x.how_many(rules, depth, mem),
+            Self::Group(x) => x.how_many(rules, mem),
             Self::Reference(x) => mem[*x],
             _ => Some(1),
         }
