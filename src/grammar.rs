@@ -749,10 +749,28 @@ mod tests {
     }
 
     #[test]
+    fn avoid_example() {
+        let grammar: Grammar = r#"
+            one : "1" | two three ;
+            two : "2" "2"? ;
+            three : three_inner ;
+            three_inner : "3"   ;
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=8 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
     fn avoid_mixed_branches() {
         let grammar: Grammar = r#"
             expr : "qwerty"* | "4" | (two)? ;
-            two : "5"* | three | four? ;
+            two : "5"* | three | three four? ;
             three : two | three ;
             four  : "4" ;
         "#
