@@ -28,7 +28,7 @@ pub struct Grammar {
     // i.e. memoized results of `how_many` calculated on construction.
     how_many: Vec<Option<u64>>,
 
-    // `reachable[i][k]` == first depth that is reachable by the `i`th branch `Expr`'s `j`th branch.
+    // `reachable[i][j]` == first depth that is reachable by the `i`th branch `Expr`'s `j`th branch.
     // branches are `Expr::Optional`, `Expr::Or`, `Expr::Repetition`.
     // `reachable` is used in `expression`: branches that are not reachable at the current depth are not explored.
     reachable: Vec<Vec<usize>>,
