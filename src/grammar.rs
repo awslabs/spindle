@@ -23,6 +23,15 @@ const MAX_REP: u32 = 10; // TODO, make interface for user to control this
 #[derive(Debug)]
 pub struct Grammar {
     rules: Vec<Expr>,
+
+    // `how_many[i]` == number of possible traversals at the ith depth
+    // i.e. memoized results of `how_many` calculated on construction.
+    how_many: Vec<Option<u64>>,
+
+    // `reachable[i][k]` == first depth that is reachable by the `i`th branch `Expr`'s `j`th branch.
+    // branches are `Expr::Optional`, `Expr::Or`, `Expr::Repetition`.
+    // `reachable` is used in `expression`: branches that are not reachable at the current depth are not explored.
+    reachable: Vec<Vec<usize>>,
 }
 
 impl Grammar {
@@ -44,41 +53,48 @@ impl Grammar {
         max_depth: Option<usize>,
     ) -> arbitrary::Result<V> {
         let mut visitor = V::new();
-        let mut to_write = vec![(&self.rules[0], 0)]; // always start at first rule
+        let mut to_write = vec![(&self.rules[0], max_depth.unwrap_or(usize::MAX))]; // always start at first rule
 
         while let Some((expr, depth)) = to_write.pop() {
-            if depth >= max_depth.unwrap_or(usize::MAX) {
+            if depth == 0 {
                 return Err(arbitrary::Error::IncorrectFormat);
             }
 
             match expr {
-                Expr::Or(v) => {
-                    let arb_index = u.int_in_range(0..=(v.len() - 1))?;
-                    to_write.push((&v[arb_index], depth));
-                    visitor.visit_or(arb_index);
+                Expr::Or(v, i) => {
+                    // TODO: might be better way to choose a random item from a filtered list
+                    // will explore ways to avoid the vec allocation when we have benchmarks.
+                    let avail: Vec<_> = (0..v.len())
+                        .filter(|j| self.reachable(depth, *i, *j))
+                        .collect();
+                    let arb_index = u.choose_iter(avail.iter())?;
+                    to_write.push((&v[*arb_index], depth));
+                    visitor.visit_or(*arb_index);
                 }
                 Expr::Concat(v) => {
                     to_write.extend(v.iter().map(|x| (x, depth)));
                     visitor.visit_concat();
                 }
-                Expr::Optional(x) => {
-                    let b = bool::arbitrary(u)?;
+                Expr::Optional(x, i) => {
+                    let b = self.reachable(depth, *i, 0) && bool::arbitrary(u)?;
                     if b {
                         to_write.push((x, depth));
                     }
                     visitor.visit_optional(b);
                 }
-                Expr::Repetition(x, min_rep) => {
+                Expr::Repetition(x, min_rep, i) => {
                     let mut reps = 0;
-                    u.arbitrary_loop(Some(*min_rep), Some(MAX_REP), |_| {
-                        to_write.push((x, depth));
-                        reps += 1;
-                        Ok(std::ops::ControlFlow::Continue(()))
-                    })?;
+                    if self.reachable(depth, *i, 0) {
+                        u.arbitrary_loop(Some(*min_rep), Some(MAX_REP), |_| {
+                            to_write.push((x, depth));
+                            reps += 1;
+                            Ok(std::ops::ControlFlow::Continue(()))
+                        })?;
+                    }
                     visitor.visit_repetition(reps);
                 }
                 Expr::Reference(index) => {
-                    to_write.push((&self.rules[*index], depth + 1));
+                    to_write.push((&self.rules[*index], depth - 1));
                     visitor.visit_reference(*index);
                 }
                 Expr::Literal(s) => visitor.visit_literal(s.as_str()),
@@ -89,6 +105,11 @@ impl Grammar {
             }
         }
         Ok(visitor)
+    }
+
+    /// Returns `true` if the `i`th branch's `j`th branch is reachable at `depth`.
+    fn reachable(&self, depth: usize, i: usize, j: usize) -> bool {
+        depth > self.reachable[i][j]
     }
 
     /// Returns the number of possible state machine traversals for
@@ -116,31 +137,8 @@ impl Grammar {
     /// ```
     /// counts as 2 traversals, even though every output is "foo".
     pub fn how_many(&self, max_depth: Option<usize>) -> Option<u64> {
-        let target_depth = max_depth.unwrap_or(usize::MAX);
-        if target_depth == 0 {
-            return Some(0);
-        }
-
-        // Use a bottom up approach for calculating the number of traversals:
-        // 1. all rules have 0 traversals at depth 0.
-        // 2. prev[i] == `how_many` for the ith rule at the previously calculated depth.
-        // 3. dp[i] == `how_many` for the ith rule the current depth which depends on `prev`.
-        // 4. finally return `how_many` for the first (start) rule.
-        let mut prev = vec![Some(0u64); self.rules.len()];
-
-        for _ in 1..target_depth {
-            let dp: Vec<_> = self
-                .rules
-                .iter()
-                .map(|r| r.how_many(&self.rules, &prev))
-                .collect();
-            // discovered all possible or already exceeded `u64::MAX`
-            if dp == prev || dp[0] == None {
-                return dp[0];
-            }
-            prev = dp;
-        }
-        self.rules[0].how_many(&self.rules, &prev)
+        let target_depth = std::cmp::min(max_depth.unwrap_or(usize::MAX), self.how_many.len() - 1);
+        self.how_many[target_depth]
     }
 }
 
@@ -181,13 +179,41 @@ impl TryFrom<Vec<(String, ir::Expr)>> for Grammar {
             return Err(Error(ErrorRepr::Reserved(res)));
         }
 
+        let mut reachable: Vec<Vec<usize>> = Vec::new();
         let rules = ir_exprs
             .into_iter()
-            .map(|ir_expr| Expr::try_new(ir_expr, &names))
+            .map(|ir_expr| Expr::try_new(ir_expr, &names, &mut reachable))
             .collect::<Result<Vec<Expr>, _>>()?;
 
+        // Use a bottom up approach for calculating the number of traversals:
+        // 1. all rules have 0 traversals at depth 0.
+        // 2. prev[i] == `how_many` for the ith rule at the previously calculated depth.
+        // 3. dp[i] == `how_many` for the ith rule the current depth which depends on `prev`.
+        // 4. finally return `how_many` for the first (start) rule.
+        let mut how_many = vec![Some(0u64)];
+        let mut prev = vec![Some(0u64); rules.len()];
+        loop {
+            let dp: Vec<_> = rules
+                .iter()
+                .map(|r| r.how_many(&rules, &prev, &mut reachable))
+                .collect();
+
+            how_many.push(dp[0]);
+
+            // discovered all possible or already exceeded `u64::MAX`
+            if dp == prev || dp[0] == None {
+                break;
+            }
+
+            prev = dp;
+        }
+
         assert_eq!(names.len(), rules.len());
-        Ok(Self { rules })
+        Ok(Self {
+            rules,
+            reachable,
+            how_many,
+        })
     }
 }
 
@@ -197,12 +223,14 @@ fn find_duplicates(names: &[String]) -> Option<HashSet<String>> {
     (!dups.is_empty()).then_some(dups)
 }
 
+/// Branch `Expr`s (`Optional`, `Or`, `Repetition`) contain a `usize`
+/// which is index of the branch in the state machine (pre-ordered).
 #[derive(Debug)]
 enum Expr {
-    Or(Vec<Expr>),
+    Or(Vec<Expr>, usize),
     Concat(Vec<Expr>),
-    Optional(Box<Expr>),
-    Repetition(Box<Expr>, u32),
+    Optional(Box<Expr>, usize),
+    Repetition(Box<Expr>, u32, usize),
     Reference(usize),
     Literal(String),
     Regex(Regex),
@@ -212,37 +240,70 @@ enum Expr {
 }
 
 impl Expr {
+    fn add(x: Option<u64>, y: Option<u64>) -> Option<u64> {
+        x?.checked_add(y?)
+    }
+
+    fn mul(x: Option<u64>, y: Option<u64>) -> Option<u64> {
+        x?.checked_mul(y?)
+    }
+
     /// See [`Grammar::how_many`].
     ///
-    /// `mem` is previously calculated `how_many` for `depth - 1` for each rule in `rules`.
-    fn how_many(&self, rules: &[Expr], mem: &[Option<u64>]) -> Option<u64> {
+    /// `mem` is previously calculated `how_many` for `depth - 1` for each `Reference::Expr`/rule in `rules`.
+    /// `reachable` is semi-built `Grammar.reachable`. If the expr is not reachable, `reachable[i][j]` is incremented to
+    /// finally indicate the first depth in which the jth branch in ith rule is reachable.
+    fn how_many(
+        &self,
+        rules: &[Expr],
+        mem: &[Option<u64>],
+        reachable: &mut [Vec<usize>],
+    ) -> Option<u64> {
         match self {
-            Self::Or(x) => {
-                let mut res = 0u64;
-                for child in x.iter() {
-                    let sub_res = child.how_many(rules, mem)?;
-                    res = res.checked_add(sub_res)?;
+            Self::Or(x, i) => {
+                let mut res = Some(0u64);
+                for (j, child) in x.iter().enumerate() {
+                    let sub_res = child.how_many(rules, mem, reachable);
+                    let child_reachable = sub_res.map_or(true, |x| x > 0);
+                    if !child_reachable {
+                        reachable[*i][j] += 1;
+                    }
+                    res = Self::add(res, sub_res);
                 }
-                Some(res)
+                res
             }
             Self::Concat(x) => {
-                let mut res = 1u64;
+                let mut res = Some(1u64);
                 for child in x.iter() {
-                    let sub_res = child.how_many(rules, mem)?;
-                    res = res.checked_mul(sub_res)?;
+                    let sub_res = child.how_many(rules, mem, reachable);
+                    res = Self::mul(res, sub_res);
                 }
-                Some(res)
+                res
             }
-            Self::Optional(x) => 1u64.checked_add(x.how_many(rules, mem)?),
-            Self::Repetition(x, min_reps) => {
-                let mut res = 0u64;
-                let sub_res = x.how_many(rules, mem)?;
-                for used_rep in *min_reps..=MAX_REP {
-                    res = res.checked_add(sub_res.pow(used_rep))?;
+            Self::Optional(x, i) => {
+                let child = x.how_many(rules, mem, reachable);
+                let child_reachable = child.map_or(true, |x| x > 0);
+                if !child_reachable {
+                    reachable[*i][0] += 1;
                 }
-                Some(res)
+                1u64.checked_add(child?)
             }
-            Self::Group(x) => x.how_many(rules, mem),
+            Self::Repetition(x, min_reps, i) => {
+                let mut res = Some(0u64);
+                let child = x.how_many(rules, mem, reachable);
+                let child_reachable = child.map_or(true, |x| x > 0);
+                if !child_reachable {
+                    reachable[*i][0] += 1;
+                }
+                if let Some(child) = child {
+                    for used_rep in *min_reps..=MAX_REP {
+                        let (sub_res, overflow) = child.overflowing_pow(used_rep);
+                        res = Self::add(res, (!overflow).then_some(sub_res));
+                    }
+                }
+                res
+            }
+            Self::Group(x) => x.how_many(rules, mem, reachable),
             Self::Reference(x) => mem[*x],
             _ => Some(1),
         }
@@ -268,10 +329,10 @@ fn fmt_w_name<'a>(
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
-            Self::Or(x) => fmt_w_name("or", x.iter(), f)?,
+            Self::Or(x, _) => fmt_w_name("or", x.iter(), f)?,
             Self::Concat(x) => fmt_w_name("concat", x.iter().rev(), f)?,
-            Self::Optional(x) => write!(f, "option({})", x)?,
-            Self::Repetition(x, _) => write!(f, "repeat({})", x)?,
+            Self::Optional(x, _) => write!(f, "option({})", x)?,
+            Self::Repetition(x, _, _) => write!(f, "repeat({})", x)?,
             Self::Reference(index) => write!(f, "{}", index)?,
             Self::Literal(l) => write!(f, "{:?}", l)?,
             Self::Regex(_) => write!(f, "regex")?, // TODO: no way to pretty print regex
@@ -285,30 +346,44 @@ impl fmt::Display for Expr {
 
 impl Expr {
     /// Converts the intermediary representation into a "compiled" state machine.
+    /// Also populates `reachable`, see `Grammar.reachable`.
     ///
     /// Checks done:
     /// - parses regex
     /// - Converts rule references to rule indexes
-    fn try_new(ir_expr: ir::Expr, names: &[String]) -> Result<Self, Error> {
+    fn try_new(
+        ir_expr: ir::Expr,
+        names: &[String],
+        reachable: &mut Vec<Vec<usize>>,
+    ) -> Result<Self, Error> {
         Ok(match ir_expr {
-            ir::Expr::Or(x) => Self::Or(
-                x.into_iter()
-                    .map(|e| Self::try_new(e, names))
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
+            ir::Expr::Or(x) => {
+                let child = x
+                    .into_iter()
+                    .map(|e| Self::try_new(e, names, reachable))
+                    .collect::<Result<Vec<_>, _>>()?;
+                reachable.push(vec![0; child.len()]);
+                Self::Or(child, reachable.len() - 1)
+            }
             ir::Expr::Concat(x) => {
                 let mut y = x
                     .into_iter()
-                    .map(|e| Self::try_new(e, names))
+                    .map(|e| Self::try_new(e, names, reachable))
                     .collect::<Result<Vec<_>, _>>()?;
                 y.reverse(); // reverse so that `expression` can use a stack
                 Self::Concat(y)
             }
-            ir::Expr::Optional(x) => Self::Optional(Box::new(Self::try_new(*x, names)?)),
-            ir::Expr::Repetition(x, min) => {
-                Self::Repetition(Box::new(Self::try_new(*x, names)?), min)
+            ir::Expr::Optional(x) => {
+                let child = Box::new(Self::try_new(*x, names, reachable)?);
+                reachable.push(vec![0]);
+                Self::Optional(child, reachable.len() - 1)
             }
-            ir::Expr::Group(x) => Self::Group(Box::new(Self::try_new(*x, names)?)),
+            ir::Expr::Repetition(x, min) => {
+                let child = Box::new(Self::try_new(*x, names, reachable)?);
+                reachable.push(vec![0]);
+                Self::Repetition(child, min, reachable.len() - 1)
+            }
+            ir::Expr::Group(x) => Self::Group(Box::new(Self::try_new(*x, names, reachable)?)),
             ir::Expr::Reference(name) => match names.iter().position(|n| *n == name) {
                 Some(i) => Self::Reference(i),
                 None => Self::Predefined(Predefined::from_str(&name).map_err(Error)?),
@@ -542,6 +617,155 @@ mod tests {
         assert_eq!(grammar.how_many(Some(10)), Some(3));
         for depth in 0..=3 {
             assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    fn success_count(grammar: &Grammar, depth: usize, total: usize) -> usize {
+        let mut buf = [0u8; 1024];
+        let mut rng = StdRng::seed_from_u64(42);
+
+        let mut valid = 0;
+        for _ in 0..total {
+            rng.fill_bytes(&mut buf);
+            let mut u = Unstructured::new(&buf);
+            valid += grammar.expression::<u64>(&mut u, Some(depth)).is_ok() as usize;
+        }
+        valid
+    }
+
+    #[test]
+    fn avoid_long_expr_opt_ref() {
+        let grammar: Grammar = r#"
+            one : two?;
+            two : "2" ;
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=4 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
+    fn avoid_long_expr_opt_hardcoded() {
+        let grammar: Grammar = r#"
+            one : "2"?;
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=4 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
+    fn avoid_long_expr_opt_hardcoded_paren() {
+        let grammar: Grammar = r#"
+            one : ("2")?;
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=4 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
+    fn avoid_long_expr_or() {
+        let grammar: Grammar = r#"
+            one : "1" | two ;
+            two : "2" | three ;
+            three : "3" ;
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=4 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
+    fn avoid_long_expr_rep_0_or_more() {
+        let grammar: Grammar = r#"
+            one : "1" | two* ;
+            two : "2";
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=4 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
+    fn avoid_long_expr_rep_1_or_more() {
+        let grammar: Grammar = r#"
+            one : "1" | two+ ;
+            two : "2";
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=4 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 100);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+    }
+
+    #[test]
+    fn avoid_impossible_deep_ref() {
+        let grammar: Grammar = r#"
+            one : two ;
+            two : three ;
+            three : "3";
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 0..=2 {
+            let valid = success_count(&grammar, depth, 100);
+            assert_eq!(valid, 0);
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+        let valid = success_count(&grammar, 3, 100);
+        assert_eq!(valid, 100);
+        assert_how_many_matches_generations(&grammar, 3);
+    }
+
+    #[test]
+    fn avoid_mixed_branches() {
+        let grammar: Grammar = r#"
+            expr : "qwerty"* | "4" | (two)? ;
+            two : "5"* | three | four? ;
+            three : two | three ;
+            four  : "4" ;
+        "#
+        .parse()
+        .unwrap();
+
+        for depth in 1..=6 {
+            assert_how_many_matches_generations(&grammar, depth);
+        }
+
+        for depth in 1..=30 {
+            let valid = success_count(&grammar, depth, 10);
+            assert_eq!(valid, 10);
         }
     }
 }
