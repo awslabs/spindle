@@ -29,7 +29,7 @@ pub struct Grammar {
     how_many: Vec<Option<u64>>,
 
     // `reachable[i][j]` == first depth that is reachable by the `i`th branch `Expr`'s `j`th branch.
-    // branches are `Expr::Optional`, `Expr::Or`, `Expr::Repetition`.
+    // Branch `Expr`s are `Expr::Optional`, `Expr::Or`, `Expr::Repetition`.
     // `reachable` is used in `expression`: branches that are not reachable at the current depth are not explored.
     reachable: Vec<Vec<usize>>,
 }
@@ -107,7 +107,7 @@ impl Grammar {
         Ok(visitor)
     }
 
-    /// Returns `true` if the `i`th branch's `j`th branch is reachable at `depth`.
+    /// Returns `true` if the `i`th branch `Expr`s `j`th branch is reachable at `depth`.
     fn reachable(&self, depth: usize, i: usize, j: usize) -> bool {
         depth > self.reachable[i][j]
     }
