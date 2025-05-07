@@ -14,7 +14,7 @@ fn main() {
 
     let mut buf = [0; 4096];
     let mut u = rand_u(&mut buf);
-    let sentence: String = grammar.expression(&mut u, None).unwrap();
+    let sentence: String = grammar.expression(&mut u, Some(5)).unwrap();
     println!("{}", sentence);
 
     // This grammar is similar to the well formed math expression grammar,
@@ -30,6 +30,6 @@ fn main() {
 
     let mut buf = [0; 4096];
     let mut u = rand_u(&mut buf);
-    let sentence: String = grammar.expression(&mut u, None).unwrap();
+    let sentence: String = grammar.expression(&mut u, Some(5)).unwrap();
     println!("{}", sentence);
 }
