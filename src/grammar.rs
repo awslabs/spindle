@@ -5,7 +5,7 @@ use crate::{ir, regex::Regex, reserved::*, Visitor};
 use arbitrary::{Arbitrary, Unstructured};
 use std::{collections::HashSet, fmt, str::FromStr};
 
-const MAX_REP: u32 = 10; // TODO, make interface for user to control this
+const MAX_REP: u32 = 8; // TODO, make interface for user to control this
 
 /// A state machine that produces `Arbitrary` matching expressions or byte sequences from [`Unstructured`](https://docs.rs/arbitrary/latest/arbitrary/struct.Unstructured.html).
 ///
@@ -455,8 +455,8 @@ mod tests {
         // 2 reps: 2^2
         // 3 reps: 2^3
         // ...
-        assert_eq!(grammar.how_many(Some(2)), Some(2047));
-        assert_eq!(grammar.how_many(None), Some(2047));
+        assert_eq!(grammar.how_many(Some(2)), Some(511));
+        assert_eq!(grammar.how_many(None), Some(511));
     }
 
     #[test]
@@ -502,6 +502,16 @@ mod tests {
         assert_eq!(grammar.how_many(Some(3)), Some(101));
         assert_how_many_matches_generations(&grammar, 3);
         assert_eq!(grammar.how_many(None), None);
+    }
+
+    #[test]
+    fn how_many_with_prefined() {
+        let grammar: Grammar = r#"
+            one : "1" | "2" | (u16 | String)? | u16? | (u16 | String)* ;
+        "#
+        .parse()
+        .unwrap();
+        assert_how_many_matches_generations(&grammar, 2);
     }
 
     #[test]

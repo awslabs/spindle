@@ -16,6 +16,7 @@ enum-iterator = "2.1.0"
 fxhash = "0.2.1"
 itoa = "1.0.11"
 regex-syntax = { version = "0.8.5", default-features = false, features = ["std"] }
+ryu = "1.0.20"
 peg = "0.8.5"
 
 [dev-dependencies]
