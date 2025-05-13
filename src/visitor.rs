@@ -1,3 +1,5 @@
+use itoa::Buffer as itoaBuffer;
+use ryu::Buffer as ryuBuffer;
 use std::str;
 
 /// Defines state that is built during `Grammar::expression`.
@@ -23,8 +25,32 @@ pub trait Visitor {
     fn visit_bytes(&mut self, _val: &[u8]) {}
     fn visit_regex(&mut self, _val: &[u8]) {}
     fn visit_group(&mut self) {}
-    fn visit_u16(&mut self, _num: u16) {}
     fn visit_str(&mut self, _s: &str) {}
+    fn visit_char(&mut self, _c: char) {}
+    fn visit_f32(&mut self, _f: f32) {}
+    fn visit_f64(&mut self, _f: f64) {}
+    fn visit_u8(&mut self, _num: u8) {}
+    fn visit_u16(&mut self, _num: u16) {}
+    fn visit_u32(&mut self, _num: u32) {}
+    fn visit_u64(&mut self, _num: u64) {}
+    fn visit_u128(&mut self, _num: u128) {}
+    fn visit_usize(&mut self, _num: usize) {}
+    fn visit_i8(&mut self, _num: i8) {}
+    fn visit_i16(&mut self, _num: i16) {}
+    fn visit_i32(&mut self, _num: i32) {}
+    fn visit_i64(&mut self, _num: i64) {}
+    fn visit_i128(&mut self, _num: i128) {}
+    fn visit_isize(&mut self, _num: isize) {}
+}
+
+macro_rules! impl_visit_num_for_vec {
+    ($($fn_name:ident = $type:ident = $buf_type:ident),* $(,)*) => (
+        $(
+            fn $fn_name(&mut self, num: $type) {
+                self.extend($buf_type::new().format(num).as_bytes());
+            }
+        )*
+    )
 }
 
 /// Returns an arbitrary byte sequence matching the grammar.
@@ -41,13 +67,40 @@ impl Visitor for Vec<u8> {
     fn visit_regex(&mut self, regex_result: &[u8]) {
         self.extend(regex_result);
     }
-    fn visit_u16(&mut self, num: u16) {
-        let mut num_buf = itoa::Buffer::new();
-        self.extend(num_buf.format(num).as_bytes());
-    }
+    impl_visit_num_for_vec!(
+        visit_u8 = u8 = itoaBuffer,
+        visit_u16 = u16 = itoaBuffer,
+        visit_u32 = u32 = itoaBuffer,
+        visit_u64 = u64 = itoaBuffer,
+        visit_u128 = u128 = itoaBuffer,
+        visit_usize = usize = itoaBuffer,
+        visit_i8 = i8 = itoaBuffer,
+        visit_i16 = i16 = itoaBuffer,
+        visit_i32 = i32 = itoaBuffer,
+        visit_i64 = i64 = itoaBuffer,
+        visit_i128 = i128 = itoaBuffer,
+        visit_isize = isize = itoaBuffer,
+        visit_f32 = f32 = ryuBuffer,
+        visit_f64 = f64 = ryuBuffer,
+    );
     fn visit_str(&mut self, s: &str) {
         self.extend(s.as_bytes())
     }
+    fn visit_char(&mut self, c: char) {
+        let mut b = [0; 4];
+        let result = c.encode_utf8(&mut b);
+        self.extend(result.as_bytes())
+    }
+}
+
+macro_rules! impl_visit_num_for_string {
+    ($($fn_name:ident = $type:ident = $buf_type:ident),* $(,)*) => (
+        $(
+            fn $fn_name(&mut self, num: $type) {
+                self.push_str($buf_type::new().format(num));
+            }
+        )*
+    )
 }
 
 /// Returns an arbitrary expression `String` matching the grammar.
@@ -68,12 +121,27 @@ impl Visitor for String {
     fn visit_regex(&mut self, regex_result: &[u8]) {
         self.push_str(str::from_utf8(regex_result).expect("utf8 bytes"));
     }
-    fn visit_u16(&mut self, num: u16) {
-        let mut num_buf = itoa::Buffer::new();
-        self.push_str(num_buf.format(num));
-    }
+    impl_visit_num_for_string!(
+        visit_u8 = u8 = itoaBuffer,
+        visit_u16 = u16 = itoaBuffer,
+        visit_u32 = u32 = itoaBuffer,
+        visit_u64 = u64 = itoaBuffer,
+        visit_u128 = u128 = itoaBuffer,
+        visit_usize = usize = itoaBuffer,
+        visit_i8 = i8 = itoaBuffer,
+        visit_i16 = i16 = itoaBuffer,
+        visit_i32 = i32 = itoaBuffer,
+        visit_i64 = i64 = itoaBuffer,
+        visit_i128 = i128 = itoaBuffer,
+        visit_isize = isize = itoaBuffer,
+        visit_f32 = f32 = ryuBuffer,
+        visit_f64 = f64 = ryuBuffer,
+    );
     fn visit_str(&mut self, s: &str) {
         self.push_str(s)
+    }
+    fn visit_char(&mut self, c: char) {
+        self.push(c)
     }
 }
 
