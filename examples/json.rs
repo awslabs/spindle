@@ -16,12 +16,19 @@ fn main() {
     .parse()
     .unwrap();
 
-    loop {
-        let mut buf = [0; 4096];
-        let mut u = rand_u(&mut buf);
-        if let Ok(s) = grammar.expression::<String>(&mut u, Some(100)) {
-            println!("{}", s);
-            break;
+    for depth in 1..=16 {
+        let how_many = grammar.how_many(Some(depth));
+        let how_many_s = if let Some(x) = how_many {
+            x.to_string()
+        } else {
+            String::from(">u64::MAX")
+        };
+        println!("{} possible traversals with depth {}", how_many_s, depth);
+        if how_many.unwrap_or(u64::MAX) > 0 {
+            let mut buf = [0; 4096];
+            let mut u = rand_u(&mut buf);
+            let expr = grammar.expression::<String>(&mut u, Some(depth)).unwrap();
+            println!("example: {}\n", expr);
         }
     }
 }
