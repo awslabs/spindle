@@ -5,8 +5,6 @@ use crate::{ir, regex::Regex, reserved::*, Visitor};
 use arbitrary::{Arbitrary, Unstructured};
 use std::{collections::HashSet, fmt, str::FromStr};
 
-const MAX_REP: u32 = 8; // TODO, make interface for user to control this
-
 /// A state machine that produces `Arbitrary` matching expressions or byte sequences from [`Unstructured`](https://docs.rs/arbitrary/latest/arbitrary/struct.Unstructured.html).
 ///
 /// # Implementation
@@ -82,10 +80,10 @@ impl Grammar {
                     }
                     visitor.visit_optional(b);
                 }
-                Expr::Repetition(x, min_rep, i) => {
+                Expr::Repetition(x, min_rep, max_rep, i) => {
                     let mut reps = 0;
                     if self.reachable(depth, *i, 0) {
-                        u.arbitrary_loop(Some(*min_rep), Some(MAX_REP), |_| {
+                        u.arbitrary_loop(Some(*min_rep), Some(*max_rep), |_| {
                             to_write.push((x, depth));
                             reps += 1;
                             Ok(std::ops::ControlFlow::Continue(()))
@@ -230,7 +228,7 @@ enum Expr {
     Or(Vec<Expr>, usize),
     Concat(Vec<Expr>),
     Optional(Box<Expr>, usize),
-    Repetition(Box<Expr>, u32, usize),
+    Repetition(Box<Expr>, u32, u32, usize),
     Reference(usize),
     Literal(String),
     Regex(Regex),
@@ -288,18 +286,30 @@ impl Expr {
                 }
                 1u64.checked_add(child?)
             }
-            Self::Repetition(x, min_reps, i) => {
+            Self::Repetition(x, min_reps, max_reps, i) => {
                 let mut res = Some(0u64);
                 let child = x.how_many(rules, mem, reachable);
                 let child_reachable = child.map_or(true, |x| x > 0);
                 if !child_reachable {
                     reachable[*i][0] += 1;
                 }
-                if let Some(child) = child {
-                    for used_rep in *min_reps..=MAX_REP {
-                        let (sub_res, overflow) = child.overflowing_pow(used_rep);
-                        res = Self::add(res, (!overflow).then_some(sub_res));
+                match child {
+                    Some(child) if child > 1 => {
+                        for used_rep in *min_reps..=*max_reps {
+                            let (sub_res, overflow) = child.overflowing_pow(used_rep);
+                            res = Self::add(res, (!overflow).then_some(sub_res));
+                            if res.is_none() {
+                                break;
+                            }
+                        }
                     }
+                    Some(child) if child == 1 => {
+                        // e.g. min,max = 1,3
+                        // "1", "11", "111" -- 3 options
+                        let range = *max_reps as u64 - *min_reps as u64 + 1;
+                        res = Self::add(res, Some(range));
+                    }
+                    _ => (),
                 }
                 res
             }
@@ -332,7 +342,7 @@ impl fmt::Display for Expr {
             Self::Or(x, _) => fmt_w_name("or", x.iter(), f)?,
             Self::Concat(x) => fmt_w_name("concat", x.iter().rev(), f)?,
             Self::Optional(x, _) => write!(f, "option({})", x)?,
-            Self::Repetition(x, _, _) => write!(f, "repeat({})", x)?,
+            Self::Repetition(x, min, max, _) => write!(f, "repeat({}, {}, {})", x, min, max)?,
             Self::Reference(index) => write!(f, "{}", index)?,
             Self::Literal(l) => write!(f, "{:?}", l)?,
             Self::Regex(_) => write!(f, "regex")?, // TODO: no way to pretty print regex
@@ -378,10 +388,10 @@ impl Expr {
                 reachable.push(vec![0]);
                 Self::Optional(child, reachable.len() - 1)
             }
-            ir::Expr::Repetition(x, min) => {
+            ir::Expr::Repetition(x, min, max) => {
                 let child = Box::new(Self::try_new(*x, names, reachable)?);
                 reachable.push(vec![0]);
-                Self::Repetition(child, min, reachable.len() - 1)
+                Self::Repetition(child, min, max, reachable.len() - 1)
             }
             ir::Expr::Group(x) => Self::Group(Box::new(Self::try_new(*x, names, reachable)?)),
             ir::Expr::Reference(name) => match names.iter().position(|n| *n == name) {
@@ -401,6 +411,7 @@ impl Expr {
 mod tests {
     use super::*;
     use rand::{rngs::StdRng, RngCore, SeedableRng};
+    use std::hash::Hash;
 
     #[test]
     fn catches_duplicates() {
@@ -449,13 +460,54 @@ mod tests {
         }
     }
 
-    fn assert_how_many_matches_generations(grammar: &Grammar, depth: usize) {
+    #[test]
+    fn rejects_incorrect_ranges() {
+        for x in [
+            r#"expr: "0"{3,2} ;"#,
+            r#"expr: "0"{3,0} ;"#,
+            r#"expr: "0"a3,a} ;"#,
+            r#"expr: "0"{a,b} ;"#,
+            r#"expr: "0"{2,0} ;"#,
+            r#"expr: "0"{0,-1} ;"#,
+            r#"expr: "0"{-1,3} ;"#,
+            r#"expr: "0"{3a} ;"#,
+            r#"expr: "0"{-1} ;"#,
+            r#"expr: "0"{} ;"#,
+            r#"expr: "0"{43250750483253} ;"#,
+        ] {
+            assert!(x.parse::<Grammar>().is_err(), "{}", x);
+        }
+    }
+
+    #[test]
+    fn accepts_correct_ranges() {
+        for x in [
+            r#"expr: "0"{2 ,3} ;"#,
+            r#"expr: "0"{2, 3} ;"#,
+            r#"expr: "0"{ 2,3} ;"#,
+            r#"expr: "0"{2,3 } ;"#,
+            r#"expr: "0"{ 2 , 3  } ;"#,
+            r#"expr: "0"{ 2 } ;"#,
+            r#"expr: "0"{ 2 } ; rule: "{" ; "#,
+            r#"expr: "0"{ 2 } ; rule: "}" ; "#,
+            r#"expr: "0"{ 2 } ; rule: "{ 3 }" ; "#,
+            r#"expr: "0"{ 2 } ; rule: "expr: \"0\"{ 2 } ;" ; "#,
+        ] {
+            let res = x.parse::<Grammar>();
+            assert!(res.is_ok(), "{}\n{:?}", x, res);
+        }
+    }
+
+    fn assert_how_many_matches_generations<T: Visitor + Hash + Eq>(
+        grammar: &Grammar,
+        depth: usize,
+    ) {
         let mut buf = [0u8; 1024];
         let num_classes = grammar
             .how_many(Some(depth))
             .expect("small number of classes") as usize;
         assert!(num_classes < 10_000);
-        let mut classes = fxhash::FxHashSet::<u64>::default();
+        let mut classes = fxhash::FxHashSet::<T>::default();
         classes.try_reserve(num_classes).unwrap();
 
         let mut rng = StdRng::seed_from_u64(42);
@@ -468,7 +520,7 @@ mod tests {
         for _ in 0..num_iterations {
             rng.fill_bytes(&mut buf);
             let mut u = Unstructured::new(&buf);
-            if let Ok(class) = grammar.expression::<u64>(&mut u, Some(depth)) {
+            if let Ok(class) = grammar.expression::<T>(&mut u, Some(depth)) {
                 classes.insert(class);
             }
         }
@@ -483,7 +535,7 @@ mod tests {
             assert_eq!(grammar.how_many(Some(max)), Some(2));
         }
         assert_eq!(grammar.how_many(None), Some(2));
-        assert_how_many_matches_generations(&grammar, 1);
+        assert_how_many_matches_generations::<u64>(&grammar, 1);
     }
 
     #[test]
@@ -497,13 +549,13 @@ mod tests {
 
         // only a depth of 1 is allowed, so "1" or "2"
         assert_eq!(grammar.how_many(Some(1)), Some(2));
-        assert_how_many_matches_generations(&grammar, 1);
+        assert_how_many_matches_generations::<u64>(&grammar, 1);
 
         // 2 + (2 * 2)
         // 2: "1" or "2"
         // 2 * 2: ("3" or "4") * ("5" or "6")
         assert_eq!(grammar.how_many(Some(2)), Some(6));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
 
         let grammar: Grammar = r#"
             expr : "1" | "2" | num? ;
@@ -512,14 +564,29 @@ mod tests {
         .parse()
         .unwrap();
         assert_eq!(grammar.how_many(Some(2)), Some(7));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
         assert_eq!(grammar.how_many(None), Some(7));
     }
 
     #[test]
-    fn how_many_reps() {
+    fn how_many_static_reps() {
         let grammar: Grammar = r#"
-            expr : num* ;
+            expr : num{6} ;
+            num  : "0" | "1" ;
+        "#
+        .parse()
+        .unwrap();
+
+        // 2 choices, exactly 6 times... 2^6 = 64
+        assert_eq!(grammar.how_many(Some(2)), Some(64));
+        assert_eq!(grammar.how_many(None), Some(64));
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
+    }
+
+    #[test]
+    fn how_many_bounded_reps() {
+        let grammar: Grammar = r#"
+            expr : num{0,6} ;
             num  : "0" | "1" ;
         "#
         .parse()
@@ -530,24 +597,61 @@ mod tests {
         // 2 reps: 2^2
         // 3 reps: 2^3
         // ...
-        assert_eq!(grammar.how_many(Some(2)), Some(511));
-        assert_eq!(grammar.how_many(None), Some(511));
+        assert_eq!(grammar.how_many(Some(2)), Some(127));
+        assert_eq!(grammar.how_many(None), Some(127));
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
+    }
+
+    #[test]
+    fn how_many_inf_reps() {
+        let grammar: Grammar = r#"
+            expr : num* ;
+            num  : "0" | "1" ;
+        "#
+        .parse()
+        .unwrap();
+
+        assert_eq!(grammar.how_many(Some(2)), None);
+        assert_eq!(grammar.how_many(None), None);
+
+        let grammar: Grammar = r#"
+            expr : num* ;
+            num  : "0" ;
+        "#
+        .parse()
+        .unwrap();
+
+        assert_eq!(
+            grammar.how_many(Some(2)),
+            Some(crate::MAX_REPEAT as u64 + 1)
+        );
+        assert_eq!(grammar.how_many(None), Some(crate::MAX_REPEAT as u64 + 1));
+
+        let grammar: Grammar = r#"
+            expr : num* ;
+            num  : "0" | r"[a-z]{2,3}" ;
+        "#
+        .parse()
+        .unwrap();
+
+        assert_eq!(grammar.how_many(Some(2)), None);
+        assert_eq!(grammar.how_many(None), None);
     }
 
     #[test]
     fn how_many_choice() {
         let grammar: Grammar = r#"expr : "1"? ;"#.parse().unwrap();
         assert_eq!(grammar.how_many(Some(2)), Some(2));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
 
         let grammar: Grammar = r#"expr : ("1" | "2" )? ;"#.parse().unwrap();
         assert_eq!(grammar.how_many(Some(2)), Some(3));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
 
         // "1", "2", "", or "" (outer)
         let grammar: Grammar = r#"expr : ("1" | "2"? )? ;"#.parse().unwrap();
         assert_eq!(grammar.how_many(Some(2)), Some(4));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
         assert_eq!(grammar.how_many(None), Some(4));
     }
 
@@ -561,13 +665,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(grammar.how_many(Some(1)), Some(1));
-        assert_how_many_matches_generations(&grammar, 1);
+        assert_how_many_matches_generations::<u64>(&grammar, 1);
 
         // a singular number
         // two numbers with 4 possible operators
         // 1 + 4
         assert_eq!(grammar.how_many(Some(2)), Some(5));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
 
         // combinations are:
         // 1 singular number
@@ -575,18 +679,18 @@ mod tests {
         // * 4 possible symbols
         // * 5 possible expressions on the right
         assert_eq!(grammar.how_many(Some(3)), Some(101));
-        assert_how_many_matches_generations(&grammar, 3);
+        assert_how_many_matches_generations::<u64>(&grammar, 3);
         assert_eq!(grammar.how_many(None), None);
     }
 
     #[test]
     fn how_many_with_prefined() {
         let grammar: Grammar = r#"
-            one : "1" | "2" | (u16 | String)? | u16? | (u16 | String)* ;
+            one : "1" | "2" | (u16 | String)? | u16? | (u16 | String){6} ;
         "#
         .parse()
         .unwrap();
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
     }
 
     #[test]
@@ -601,15 +705,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(grammar.how_many(Some(1)), Some(0));
-        assert_how_many_matches_generations(&grammar, 1);
+        assert_how_many_matches_generations::<u64>(&grammar, 1);
         // only "1" and "2" are reachable, `nested` is a reference
         // and needs one more depth!
         assert_eq!(grammar.how_many(Some(2)), Some(2));
-        assert_how_many_matches_generations(&grammar, 2);
+        assert_how_many_matches_generations::<u64>(&grammar, 2);
 
         // 3 + 2 * 4 * 2
         assert_eq!(grammar.how_many(Some(3)), Some(19));
-        assert_how_many_matches_generations(&grammar, 3);
+        assert_how_many_matches_generations::<u64>(&grammar, 3);
 
         // This grammar is infinitely recursive
         assert_eq!(grammar.how_many(None), None);
@@ -626,7 +730,8 @@ mod tests {
         .unwrap();
         assert_eq!(grammar.how_many(Some(10)), Some(3));
         for depth in 0..=3 {
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
@@ -655,7 +760,8 @@ mod tests {
         for depth in 1..=4 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
@@ -670,7 +776,8 @@ mod tests {
         for depth in 1..=4 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
@@ -685,7 +792,8 @@ mod tests {
         for depth in 1..=4 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
@@ -702,30 +810,34 @@ mod tests {
         for depth in 1..=4 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
     #[test]
     fn avoid_long_expr_rep_0_or_more() {
         let grammar: Grammar = r#"
-            one : "1" | two* ;
+            one : "1" | two{4} ;
             two : "2";
         "#
         .parse()
         .unwrap();
 
+        assert_eq!(grammar.how_many(Some(1)), Some(1));
+
         for depth in 1..=4 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
     #[test]
     fn avoid_long_expr_rep_1_or_more() {
         let grammar: Grammar = r#"
-            one : "1" | two+ ;
+            one : "1" | two{1,3} ;
             two : "2";
         "#
         .parse()
@@ -734,7 +846,8 @@ mod tests {
         for depth in 1..=4 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
     }
 
@@ -751,11 +864,13 @@ mod tests {
         for depth in 0..=2 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 0);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
+            assert_how_many_matches_generations::<String>(&grammar, depth);
         }
         let valid = success_count(&grammar, 3, 100);
         assert_eq!(valid, 100);
-        assert_how_many_matches_generations(&grammar, 3);
+        assert_how_many_matches_generations::<u64>(&grammar, 3);
+        assert_how_many_matches_generations::<String>(&grammar, 3);
     }
 
     #[test]
@@ -772,15 +887,15 @@ mod tests {
         for depth in 1..=8 {
             let valid = success_count(&grammar, depth, 100);
             assert_eq!(valid, 100);
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
         }
     }
 
     #[test]
     fn avoid_mixed_branches() {
         let grammar: Grammar = r#"
-            expr : "qwerty"* | "4" | (two)? ;
-            two : "5"* | three | three four? ;
+            expr : "qwerty"{2,4} | "4" | (two)? ;
+            two : "5"{3} | three | three four? ;
             three : two | three ;
             four  : "4" ;
         "#
@@ -788,7 +903,7 @@ mod tests {
         .unwrap();
 
         for depth in 1..=6 {
-            assert_how_many_matches_generations(&grammar, depth);
+            assert_how_many_matches_generations::<u64>(&grammar, depth);
         }
 
         for depth in 1..=30 {

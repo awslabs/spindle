@@ -28,8 +28,8 @@ let math: Grammar = r#"
     symbol : r"-|\+|\*|÷" ;
 "#.parse().unwrap();
 
-let mut u = Unstructured::new(b"poiuytasdbvcxeygrey");
-let sentence: String = math.expression(&mut u, None).unwrap();
+let mut wool = Unstructured::new(b"poiuytasdbvcxeygrey");
+let yarn: String = math.expression(&mut wool, None).unwrap();
 // (21359*39933))+13082-62216
 ```
 The state machine traversal always starts at the first rule. In the example, 
@@ -52,8 +52,8 @@ let math: Grammar = r#"
     symbol : r"-|\+|\*|÷" | String ;
 "#.parse().unwrap();
 
-let mut u = Unstructured::new(b"poiuytasdbvcxeygrey");
-let sentence: String = math.expression(&mut u, None).unwrap();
+let mut wool = Unstructured::new(b"poiuytasdbvcxeygrey");
+let yarn: String = math.expression(&mut wool, None).unwrap();
 // (44637*32200)Ѱ'x124928390-27338)
 ```
 
@@ -85,9 +85,41 @@ fuzz_target!(|expr: MathExpression| {
 });
 ```
 
-## Pre-defined Rules
-- `String` evaluates to `str::arbitrary(u)`
-- `u16` evaluates to `u16::arbitrary(u)`
+## Grammar Syntax
+**For examples see [examples](https://github.com/awslabs/spindle/tree/main/examples).**
+
+The operators of Spindle's grammar are:
+- Optional: `X?` evaluates to either `X` or nothing.
+- Repetition:
+    - `X+` evaluates to `X` 1 or more times (up to and including [`crate::MAX_REPEAT`])
+    - `X*` evaluates to `X` 0 or more times (up to and including [`crate::MAX_REPEAT`])
+    - `X{k}` evaluates to `X` exactly k times, where k is a `u32`.
+    - `X{min,max}` evaluates `X` at least `min` times and at most (including) `max` times. `min` and `max` are `u32`.
+- Or: `X | Y` evaluates to either `X` or `Y`.
+- Literal:
+    - String: `"X"` evaluates to the literal value inside the quotes, e.g. `"foo"`.
+    - Bytes: `[X]` evaluates to the literal `Vec<u8>`, e.g. `[1, 2]`.
+- Regex: `r"X"` arbitrarily evaluates the regex inside the quotes, e.g. `r"[A-Z]+"`.
+- Concat: `X Y` evaluates to `X` and then `Y`.
+- Group: `(X)` groups the expression insdie the parenthesis, e.g. `(X | Y)+`.
+- Reference: `rule : X ;` defines a rule with name "rule" with some pattern `X`. "rule" can be referenced in the same grammar, e.g. `another_rule : rule+ ;`
+- Predefined: `u16` is a pre-defined rule that evaluate to `u16::arbitrary(u)`. All pre-defined rules evaluate to `T::arbitrary(u)`. [See more](https://docs.rs/arbitrary/1.4.1/arbitrary/trait.Arbitrary.html#foreign-impls). All pre-defined rules are:
+    - String
+    - char
+    - u8
+    - u16
+    - u32
+    - u64
+    - u128
+    - usize
+    - i8
+    - i16
+    - i32
+    - i64
+    - i128
+    - isize
+    - f32
+    - f64
 
 ## Visitor
 A `Visitor` is some state that is initialized before traversal and mutated as different rules are visited during the traversal, e.g. `visit_or`. Vistors that are already implemented are `String` and `Vec<u8>` for output buffers, and `u64` for classification. 
@@ -123,9 +155,9 @@ impl Visitor for PrimeDetector {
     }
 }
 
-let mut u = arbitrary::Unstructured::new(b"qwerty");
-let (expr, any_primes): (String, PrimeDetector) = math.expression(&mut u, None).unwrap();
-let expr: String = math.expression(&mut u, None).unwrap();
+let mut wool = arbitrary::Unstructured::new(b"qwerty");
+let (expr, any_primes): (String, PrimeDetector) = math.expression(&mut wool, None).unwrap();
+let yarn: String = math.expression(&mut wool, None).unwrap();
 assert!(any_primes.0);
 ```
 
@@ -178,7 +210,7 @@ impl Visitor for MathAst {
     }
 }
 
-let mut u = arbitrary::Unstructured::new(b"494392");
+let mut wool = arbitrary::Unstructured::new(b"494392");
 // MathAst { cur_op: None, stack: [Expr(Num(13108), '*', Num(0))] }
-let tree: MathAst = math.expression(&mut u, None).unwrap();
+let yarn: MathAst = math.expression(&mut wool, None).unwrap();
 ```

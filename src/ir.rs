@@ -2,6 +2,11 @@
 
 use peg::parser;
 
+/// The maxium repititions in `+` and `*` rules.
+/// This can be overriden with explicit range rules,
+/// e.g. `"3"{0,2345678}` repeats up to 2345678 `"3"`s.
+pub const MAX_REPEAT: u32 = 255;
+
 parser! {
 /// This parser is not meant to efficient, since parsing the grammar is not meant to be
 /// on the hot path (unlike generating expressions).
@@ -42,8 +47,20 @@ pub grammar bnf() for str {
         = l:(branch_inner() **<2,64> "|") { Expr::Or(l) }
 
     rule rep() -> Expr
-        = g:expression() _ "*" { Expr::Repetition(Box::new(g), 0) }
-        / g:expression() _ "+" { Expr::Repetition(Box::new(g), 1) }
+        = g:expression() _ "*" { Expr::Repetition(Box::new(g), 0, MAX_REPEAT) }
+        / g:expression() _ "+" { Expr::Repetition(Box::new(g), 1, MAX_REPEAT) }
+        / g:expression() _ "{" _ n:$(['0'..='9']+) _ "}" {?
+            n.parse().map_or(Err("u32"), |reps| Ok(Expr::Repetition(Box::new(g), reps, reps)))
+        }
+        / g:expression() _ "{" _ n1:$(['0'..='9']+) _ "," _ n2:$(['0'..='9']+) _ "}" {?
+            let min_reps = n1.parse().or(Err("u32"))?;
+            let max_reps = n2.parse().or(Err("u32"))?;
+            match min_reps < max_reps {
+                true => Ok(Expr::Repetition(Box::new(g), min_reps, max_reps)),
+                false => Err("Min repetitions cannot be larger than max repetitions"),
+            }
+
+        }
 
     rule choice() -> Expr
         = g:expression() _ "?" { Expr::Optional(Box::new(g)) }
@@ -108,7 +125,7 @@ pub enum Expr {
     Or(Vec<Expr>),
     Concat(Vec<Expr>),
     Optional(Box<Expr>),
-    Repetition(Box<Expr>, u32),
+    Repetition(Box<Expr>, u32, u32),
     Reference(String),
     Literal(String),
     Regex(String),
