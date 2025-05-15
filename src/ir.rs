@@ -52,7 +52,7 @@ pub grammar bnf() for str {
         / g:expression() _ "{" _ n:$(['0'..='9']+) _ "}" {?
             n.parse().map_or(Err("u32"), |reps| Ok(Expr::Repetition(Box::new(g), reps, reps)))
         }
-        / g:expression() _ "{" _ n1:$(['0'..='9']+) _ "," _ n2:$(['0'..='9']+) "}" {?
+        / g:expression() _ "{" _ n1:$(['0'..='9']+) _ "," _ n2:$(['0'..='9']+) _ "}" {?
             let min_reps = n1.parse().or(Err("u32"))?;
             let max_reps = n2.parse().or(Err("u32"))?;
             match min_reps < max_reps {

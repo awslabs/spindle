@@ -473,8 +473,28 @@ mod tests {
             r#"expr: "0"{3a} ;"#,
             r#"expr: "0"{-1} ;"#,
             r#"expr: "0"{} ;"#,
+            r#"expr: "0"{43250750483253} ;"#,
         ] {
-            assert!(x.parse::<Grammar>().is_err());
+            assert!(x.parse::<Grammar>().is_err(), "{}", x);
+        }
+    }
+
+    #[test]
+    fn accepts_correct_ranges() {
+        for x in [
+            r#"expr: "0"{2 ,3} ;"#,
+            r#"expr: "0"{2, 3} ;"#,
+            r#"expr: "0"{ 2,3} ;"#,
+            r#"expr: "0"{2,3 } ;"#,
+            r#"expr: "0"{ 2 , 3  } ;"#,
+            r#"expr: "0"{ 2 } ;"#,
+            r#"expr: "0"{ 2 } ; rule: "{" ; "#,
+            r#"expr: "0"{ 2 } ; rule: "}" ; "#,
+            r#"expr: "0"{ 2 } ; rule: "{ 3 }" ; "#,
+            r#"expr: "0"{ 2 } ; rule: "expr: \"0\"{ 2 } ;" ; "#,
+        ] {
+            let res = x.parse::<Grammar>();
+            assert!(res.is_ok(), "{}\n{:?}", x, res);
         }
     }
 
