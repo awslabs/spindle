@@ -10,4 +10,5 @@ mod visitor;
 
 pub use error::Error;
 pub use grammar::Grammar;
+pub use ir::MAX_REPEAT;
 pub use visitor::Visitor;
