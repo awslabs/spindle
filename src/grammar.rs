@@ -22,13 +22,16 @@ use std::{collections::HashSet, fmt, str::FromStr};
 pub struct Grammar {
     rules: Vec<Expr>,
 
-    // `how_many[i]` == number of possible traversals at the ith depth
-    // i.e. memoized results of `how_many` calculated on construction.
+    /// `rule_names[i]` = name the ith rule definition, as defined by the user in `FromStr`.
+    rule_names: Box<[Box<str>]>,
+
+    /// `how_many[i]` == number of possible traversals at the ith depth
+    /// i.e. memoized results of `how_many` calculated on construction.
     how_many: Vec<Option<u64>>,
 
-    // `reachable[i][j]` == first depth that is reachable by the `i`th branch `Expr`'s `j`th branch.
-    // Branch `Expr`s are `Expr::Optional`, `Expr::Or`, `Expr::Repetition`.
-    // `reachable` is used in `expression`: branches that are not reachable at the current depth are not explored.
+    /// `reachable[i][j]` == first depth that is reachable by the `i`th branch `Expr`'s `j`th branch.
+    /// Branch `Expr`s are `Expr::Optional`, `Expr::Or`, `Expr::Repetition`.
+    /// `reachable` is used in `expression`: branches that are not reachable at the current depth are not explored.
     reachable: Vec<Vec<usize>>,
 }
 
@@ -93,7 +96,7 @@ impl Grammar {
                 }
                 Expr::Reference(index) => {
                     to_write.push((&self.rules[*index], depth - 1));
-                    visitor.visit_reference(*index);
+                    visitor.visit_reference(&self.rule_names[*index], *index);
                 }
                 Expr::Literal(s) => visitor.visit_literal(s.as_str()),
                 Expr::Bytes(b) => visitor.visit_bytes(b),
@@ -113,16 +116,19 @@ impl Grammar {
     /// Returns the number of possible state machine traversals for
     /// this state machine or `None` if the result exceeds `u64::MAX`.
     ///
+    /// In other words, `grammar.how_many(depth)` is the number of unique values possible from `grammar.expression::<u64>(u, depth)` (barring hash collisions).
+    ///
     /// # Parameters
     /// `max_depth` is the maximum nested references that the traversal is allowed.
     /// A `max_depth` of 0 will always return 0.
-    /// `grammar.how_many(depth)` is the number of unique values possible from
-    /// `grammar.expression::<u64>(u, depth)`, barring hash collisions.
     ///
     /// # Usage
     /// Provides a rough possible number of equivalence classes of the grammar,
     /// which is useful for estimating overall coverage as the fuzzer discovers more
-    /// classes over time.
+    /// classes over time. Equivalence classes summarize the space of all inputs based on
+    /// high level strcuture, not the actual data of terminal nodes.
+    /// A large `how_many` means achieving full coverage may challenge your time constraints.
+    /// A small `how_many` signals that you could increase the complexity or granularity of your grammar.
     ///
     /// # Limitations
     /// 1. No traversals are counted inside of Regex and pre-defined (e.g. String) rules
@@ -205,10 +211,15 @@ impl TryFrom<Vec<(String, ir::Expr)>> for Grammar {
 
             prev = dp;
         }
-
         assert_eq!(names.len(), rules.len());
+        let rule_names = names
+            .into_iter()
+            .map(|x| x.into())
+            .collect::<Vec<Box<str>>>()
+            .into();
         Ok(Self {
             rules,
+            rule_names,
             reachable,
             how_many,
         })

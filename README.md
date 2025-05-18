@@ -67,8 +67,8 @@ use std::sync::LazyLock;
 static GRAMMAR: LazyLock<Grammar> = LazyLock::new(|| {
     r#"
         expr   : u16 | paren | expr symbol expr ;
-        paren  : "(" expr symbol expr ")" ;
-        symbol : r"-|\+|\*|÷" ;
+        paren  : "(" expr symbol expr ")" ")"? ;
+        symbol : r"-|\+|\*|÷" | String ;
     "#.parse().unwrap()
 });
 
@@ -76,7 +76,7 @@ struct MathExpression(String);
 
 impl<'a> Arbitrary<'a> for MathExpression {
     fn arbitrary(u: &mut Unstructured<'a>) -> Result<Self> {
-        Ok(Self(GRAMMAR.expression(u, None)?.0))
+        Ok(Self(GRAMMAR.expression(u, None)?))
     }
 }
 
@@ -84,47 +84,43 @@ fuzz_target!(|expr: MathExpression| {
     // ... my_parser(expr);
 });
 ```
+#### Samples
+```text
+6705d81051237=
+♣69382149-12901+8851÷50*3993043534
+(8198942155÷60177552446447)
+(586643-96)*036074789
+(8÷68){K2628
+(5798))
+(0868430}ݾ▼73)
+0135259
+(930-6*9502)
+5045620÷91599
+```
 
 ## Grammar Syntax
 **For examples see [examples](https://github.com/awslabs/spindle/tree/main/examples).**
 
-The operators of Spindle's grammar are:
-- Optional: `X?` evaluates to either `X` or nothing.
-- Repetition:
-    - `X+` evaluates to `X` 1 or more times (up to and including [`crate::MAX_REPEAT`])
-    - `X*` evaluates to `X` 0 or more times (up to and including [`crate::MAX_REPEAT`])
-    - `X{k}` evaluates to `X` exactly k times, where k is a `u32`.
-    - `X{min,max}` evaluates `X` at least `min` times and at most (including) `max` times. `min` and `max` are `u32`.
-- Or: `X | Y` evaluates to either `X` or `Y`.
-- Literal:
-    - String: `"X"` evaluates to the literal value inside the quotes, e.g. `"foo"`.
-    - Bytes: `[X]` evaluates to the literal `Vec<u8>`, e.g. `[1, 2]`.
-- Regex: `r"X"` arbitrarily evaluates the regex inside the quotes, e.g. `r"[A-Z]+"`.
-- Concat: `X Y` evaluates to `X` and then `Y`.
-- Group: `(X)` groups the expression insdie the parenthesis, e.g. `(X | Y)+`.
-- Reference: `rule : X ;` defines a rule with name "rule" with some pattern `X`. "rule" can be referenced in the same grammar, e.g. `another_rule : rule+ ;`
-- Predefined: `u16` is a pre-defined rule that evaluate to `u16::arbitrary(u)`. All pre-defined rules evaluate to `T::arbitrary(u)`. [See more](https://docs.rs/arbitrary/1.4.1/arbitrary/trait.Arbitrary.html#foreign-impls). All pre-defined rules are:
-    - String
-    - char
-    - u8
-    - u16
-    - u32
-    - u64
-    - u128
-    - usize
-    - i8
-    - i16
-    - i32
-    - i64
-    - i128
-    - isize
-    - f32
-    - f64
+| Syntax      | Description |
+| ----------- | ----------- |
+| `rule : X ;` | Defines a rule with name "rule" with some pattern `X`. "rule" can be referenced in the same grammar, e.g. `another_rule : rule+ ;` |
+| `X?`         | Evaluates to either `X` or nothing. |
+| `X+`         | Evaluates to `X` 1 or more times (up to and including [`crate::MAX_REPEAT`]) |
+| `X*`         | Evaluates to `X` 0 or more times (up to and including [`crate::MAX_REPEAT`]) |
+| `X{k}`       | Evaluates to `X` exactly `k` times, where `k` is a `u32`. |
+| `X{min,max}` | Evaluates `X` at least `min` times and at most (including) `max` times. `min` and `max` are `u32`. |
+| `X \| Y`     | Evaluates to either `X` or `Y`. |
+| `"X"`        | Literal value inside the quotes, e.g. `"foo"` |
+| `[X]`        | Literal `Vec<u8>`, e.g. `[1, 2]`. |
+| `r"X"`       | Arbitrarily evaluates the regex inside the quotes, e.g. `r"[A-Z]+"`. |
+| `X Y`        | Evaluates to `X` and then `Y`. |
+| `(X)`        | Groups the expression inside the parenthesis, e.g. `(X \| Y)+`. |
+| `u16`, `String`, etc | A pre-defined type that evaluates to `T::arbitrary(u)`. [See more](https://docs.rs/arbitrary/1.4.1/arbitrary/trait.Arbitrary.html#foreign-impls). Supported pre-defined rules are `String`, `char`, `f32`, `f64`, and signed+unsigned integer types. |
 
 ## Visitor
-A `Visitor` is some state that is initialized before traversal and mutated as different rules are visited during the traversal, e.g. `visit_or`. Vistors that are already implemented are `String` and `Vec<u8>` for output buffers, and `u64` for classification. 
+A [`Visitor`] is state that is initialized before traversal and mutated as different rules are visited during the traversal, e.g. `visit_or`. Visitors that are already implemented are `String` and `Vec<u8>` for output buffers, and `u64` for classification.
 
-Users can use their own implementation of `Visitor`, for example if they want to 
+Users can implement their own `Visitor` to
 - use a different output buffer
 - use a different classification
 - gather data
