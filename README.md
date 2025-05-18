@@ -7,11 +7,11 @@
 Spindle is a simple and efficient expression and byte sequence generator to aid fuzz testing parsers and de-serializers. Spindle spins raw, untyped byte buffers into structured data.
 
 ## Overview
-Spindle's syntax, similar to [Extended Backus–Naur form](https://en.wikipedia.org/wiki/Extended_Backus%E2%80%93Naur_form), lets users define the structure of generated data. This syntax compiles to `Grammar`, a state machine that can be arbitrarily traversed to produce structure-aware, matching expressions.
+Spindle's syntax lets users define the structure of generated data. This syntax compiles to `Grammar`, a state machine that can be arbitrarily traversed to produce structure-aware, matching expressions.
 
 Spindle works with fuzzers such as [cargo-fuzz](https://crates.io/crates/cargo-fuzz) or [AFL](https://crates.io/crates/afl) because it is an extension of [arbitrary](https://crates.io/crates/arbitrary); the traversal of the state machine is deterministically dependent on [`Unstructured`](https://docs.rs/arbitrary/latest/arbitrary/struct.Unstructured.html).
 
-Spindle is particularily useful for generating semi-correct and interesting inputs that attack edge cases of parsers and de-serializers, such as mixing familar tokens in incorrect places or sprinkling in Unicode characters.
+Spindle is particularly useful for generating semi-correct and interesting inputs that attack edge cases of parsers and de-serializers, such as mixing familiar tokens in incorrect places or sprinkling in Unicode characters.
 
 Spindle is developed and leveraged by AWS to fuzz test the parsers and de-serializers in their backend systems.
 
@@ -115,7 +115,7 @@ fuzz_target!(|expr: MathExpression| {
 | `r"X"`       | Arbitrarily evaluates the regex inside the quotes, e.g. `r"[A-Z]+"`. |
 | `X Y`        | Evaluates to `X` and then `Y`. |
 | `(X)`        | Groups the expression inside the parenthesis, e.g. `(X \| Y)+`. |
-| `u16`, `String`, etc | A pre-defined type that evaluates to `T::arbitrary(u)`. [See more](https://docs.rs/arbitrary/1.4.1/arbitrary/trait.Arbitrary.html#foreign-impls). Supported pre-defined rules are `String`, `char`, `f32`, `f64`, and signed+unsigned integer types. |
+| `u16`, `String`, etc | A pre-defined type that evaluates to `T::arbitrary(u)`. [See more](https://docs.rs/arbitrary/1.4.1/arbitrary/trait.Arbitrary.html#foreign-impls). Supported pre-defined rules are `String`, `char`, `f32`, `f64`, and signed + unsigned integer types. |
 
 ## Visitor
 A [`Visitor`] is state that is initialized before traversal and mutated as different rules are visited during the traversal, e.g. `visit_or`. Visitors that are already implemented are `String` and `Vec<u8>` for output buffers, and `u64` for classification.
