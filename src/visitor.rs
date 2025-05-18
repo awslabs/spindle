@@ -2,7 +2,7 @@ use itoa::Buffer as itoaBuffer;
 use ryu::Buffer as ryuBuffer;
 use std::str;
 
-/// Defines state that is built during `Grammar::expression`.
+/// Defines state that is built during [`crate::Grammar::expression`].
 ///
 /// This is implemented for
 /// - `String` to produce string expressions
@@ -11,35 +11,62 @@ use std::str;
 ///
 /// You can implement this yourself, for example if you want to implement equivalence classes that
 /// - ignore order
-/// - ignore certain rules
+/// - ignore certain paths or transitions
 /// - are more accurate
-/// - care about characterics of the arbitrary data, such as if a string is ascii or not.  
+/// - care about characterics of the arbitrary data, such as if a string is ascii or not.
+/// Or implement a visitor to build some structured state, such as a tree a collection of generated data.
 pub trait Visitor {
+    /// Instiates the visitor before traversal.
     fn new() -> Self;
+    /// Visits the `X | Y` branch in the grammar and provides the `index`th path that was taken.
     fn visit_or(&mut self, _index: usize) {}
+    /// Visits the `X Y` operation.
     fn visit_concat(&mut self) {}
+    /// Visits `X?` and provides whether or not `X` will be evaluated.
     fn visit_optional(&mut self, _was_chosen: bool) {}
+    /// Visits `X*`, `X+`, `X{k}`, or `X{min,max}` and provides how many repetitions were arbitrarily selected.
     fn visit_repetition(&mut self, _reps: usize) {}
-    fn visit_reference(&mut self, _index: usize) {}
+    /// Visits a use/reference of a defined rule and provides the rule name and index/id.
+    fn visit_reference(&mut self, _name: &str, _index: usize) {}
+    /// Visits the literal `str`.
     fn visit_literal(&mut self, _s: &str) {}
+    /// Visits the literal `&[u8]`.
     fn visit_bytes(&mut self, _val: &[u8]) {}
-    fn visit_regex(&mut self, _val: &[u8]) {}
+    /// Visits regex and provides the arbitrary regex that was generated.
+    fn visit_regex(&mut self, _generated: &[u8]) {}
+    /// Visits the `(X)` group.
     fn visit_group(&mut self) {}
+    /// Visits `String` pre-defined rule and provides the generated arbitrary `str`.
     fn visit_str(&mut self, _s: &str) {}
+    /// Visits `char` pre-defined rule and provides the generated arbitrary `char`.
     fn visit_char(&mut self, _c: char) {}
+    /// Visits `f32` pre-defined rule and provides the generated arbitrary `f32`.
     fn visit_f32(&mut self, _f: f32) {}
+    /// Visits `f64` pre-defined rule and provides the generated arbitrary `f64`.
     fn visit_f64(&mut self, _f: f64) {}
+    /// Visits `u8` pre-defined rule and provides the generated arbitrary `u8`.
     fn visit_u8(&mut self, _num: u8) {}
+    /// Visits `u16` pre-defined rule and provides the generated arbitrary `u16`.
     fn visit_u16(&mut self, _num: u16) {}
+    /// Visits `u32` pre-defined rule and provides the generated arbitrary `u32`.
     fn visit_u32(&mut self, _num: u32) {}
+    /// Visits `u64` pre-defined rule and provides the generated arbitrary `u64`.
     fn visit_u64(&mut self, _num: u64) {}
+    /// Visits `u128` pre-defined rule and provides the generated arbitrary `u128`.
     fn visit_u128(&mut self, _num: u128) {}
+    /// Visits `usize` pre-defined rule and provides the generated arbitrary `usize`.
     fn visit_usize(&mut self, _num: usize) {}
+    /// Visits `i8` pre-defined rule and provides the generated arbitrary `i8`.
     fn visit_i8(&mut self, _num: i8) {}
+    /// Visits `i16` pre-defined rule and provides the generated arbitrary `i16`.
     fn visit_i16(&mut self, _num: i16) {}
+    /// Visits `i32` pre-defined rule and provides the generated arbitrary `i32`.
     fn visit_i32(&mut self, _num: i32) {}
+    /// Visits `i64` pre-defined rule and provides the generated arbitrary `i64`.
     fn visit_i64(&mut self, _num: i64) {}
+    /// Visits `i128` pre-defined rule and provides the generated arbitrary `i128`.
     fn visit_i128(&mut self, _num: i128) {}
+    /// Visits `isize` pre-defined rule and provides the generated arbitrary `isize`.
     fn visit_isize(&mut self, _num: isize) {}
 }
 
@@ -170,7 +197,7 @@ impl Visitor for u64 {
     fn visit_optional(&mut self, was_chosen: bool) {
         id_hash(self, fxhash::hash64(&(2, was_chosen as u64)))
     }
-    fn visit_reference(&mut self, index: usize) {
+    fn visit_reference(&mut self, _: &str, index: usize) {
         id_hash(self, fxhash::hash64(&(3, index as u64)))
     }
     fn visit_repetition(&mut self, reps: usize) {
@@ -224,9 +251,9 @@ macro_rules! impl_visitor_tuple {
                 let ($(ref mut $name,)+) = *self;
                 $($name.visit_repetition(reps);)+
             }
-            fn visit_reference(&mut self, index: usize) {
+            fn visit_reference(&mut self, name: &str, index: usize) {
                 let ($(ref mut $name,)+) = *self;
-                $($name.visit_reference(index);)+
+                $($name.visit_reference(name, index);)+
             }
             fn visit_literal(&mut self, val: &str) {
                 let ($(ref mut $name,)+) = *self;
