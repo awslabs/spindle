@@ -35,9 +35,9 @@ let yarn: String = math.expression(&mut wool, None).unwrap();
 The state machine traversal always starts at the first rule. In the example, 
 - `expr` is the first rule and evaluates to either `u16`, `paren`, or the concatenation of `expr` and `symbol` and `expr`.
 - `;` delimits different rules.
-- `u16` is a pre-defined data types that directly evaluates to `u16::arbitrary(u)`.
-- `paren` evaluates to the concatenation of the literal `"("`, `expr`, `symbol`, `expr` and, `")"`.
-- `symbol` evaluates to the an arbitrary string matching the regex `-|\+|\*|÷`.
+- `u16` is a pre-defined rule that directly evaluates to `u16::arbitrary(u)`.
+- `paren` evaluates to the concatenation of the literal `"("`, `expr`, `symbol`, `expr`, and `")"`.
+- `symbol` evaluates to any arbitrary string that matches the regex `-|\+|\*|÷`.
 
 ### Semi-Correct Expression
 This grammar is similar to the well formed math expression grammar, but sometimes includes an extra closing parenthesis and/or an arbitrary symbol.
