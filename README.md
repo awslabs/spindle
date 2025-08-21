@@ -32,7 +32,7 @@ let mut wool = Unstructured::new(b"poiuytasdbvcxeygrey");
 let yarn: String = math.expression(&mut wool, None).unwrap();
 // (21359*39933))+13082-62216
 ```
-The state machine traversal always starts at the first rule. In the example, 
+The state machine traversal always starts at the first rule. In the example,
 - `expr` is the first rule and evaluates to either `u16`, `paren`, or the concatenation of `expr` and `symbol` and `expr`.
 - `;` delimits different rules.
 - `u16` is a pre-defined rule that directly evaluates to `u16::arbitrary(u)`.
@@ -115,6 +115,7 @@ fuzz_target!(|expr: MathExpression| {
 | `r"X"`       | Arbitrarily evaluates the regex inside the quotes, e.g. `r"[A-Z]+"`. |
 | `X Y`        | Evaluates to `X` and then `Y`. |
 | `(X)`        | Groups the expression inside the parenthesis, e.g. `(X \| Y)+`. |
+| `X @ w \| Y @ v` | Evaluates to either `X` or `Y` based off probabilities given by weights `w` and `v` respectively, where `w` and `v` are `u16`.
 | `u16`, `String`, etc | A pre-defined type that evaluates to `T::arbitrary(u)`. [See more](https://docs.rs/arbitrary/1.4.1/arbitrary/trait.Arbitrary.html#foreign-impls). Supported pre-defined rules are `String`, `char`, `f32`, `f64`, and signed + unsigned integer types. |
 
 ## Visitor

@@ -65,12 +65,21 @@ impl Grammar {
                 Expr::Or(v, i) => {
                     // TODO: might be better way to choose a random item from a filtered list
                     // will explore ways to avoid the vec allocation when we have benchmarks.
-                    let avail: Vec<_> = (0..v.len())
-                        .filter(|j| self.reachable(depth, *i, *j))
+                    // TODO: the weighted choosing is quite hacky, improve if possible
+                    let avail: Vec<_> = v
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(j, x)| {
+                            if self.reachable(depth, *i, j) {
+                                Some(x)
+                            } else {
+                                None
+                            }
+                        })
                         .collect();
-                    let arb_index = u.choose_iter(avail.iter())?;
-                    to_write.push((&v[*arb_index], depth));
-                    visitor.visit_or(*arb_index);
+                    let (choice, arb_index) = choose_weighted(u, &avail)?;
+                    to_write.push((choice, depth));
+                    visitor.visit_or(arb_index);
                 }
                 Expr::Concat(v) => {
                     to_write.extend(v.iter().map(|x| (x, depth)));
@@ -232,11 +241,37 @@ fn find_duplicates(names: &[String]) -> Option<HashSet<String>> {
     (!dups.is_empty()).then_some(dups)
 }
 
+/// Given a collection of (expression, weight) pairs, randomly choose an expression using
+/// the weights as probabilities. Returns the chosen expression and its index in the
+/// original collection.
+///
+/// Returns Err if `choices_weighted` is empty.
+fn choose_weighted<'a>(
+    u: &mut Unstructured,
+    choices_weighted: &[&'a (Expr, WeightType)],
+) -> arbitrary::Result<(&'a Expr, usize)> {
+    let total_weight: usize = choices_weighted.iter().map(|x| x.1).sum();
+    // error occurs if choices_weighted is empty
+    // add one to shift range from (0..total_weight) to (1..=total_weight)
+    let mut rem_weight = u.choose_index(total_weight)? + 1;
+    for (i, x) in choices_weighted.iter().enumerate() {
+        let w = x.1;
+        if w > 0 && rem_weight <= w {
+            return Ok((&x.0, i));
+        }
+        rem_weight -= w;
+    }
+    unreachable!("total_weight == sum of all weights")
+}
+
+/// Using usize to allow for easy interoperability with Unstructured::choose_index.
+pub(crate) type WeightType = usize;
+
 /// Branch `Expr`s (`Optional`, `Or`, `Repetition`) contain a `usize`
 /// which is index of the branch in the state machine (pre-ordered).
 #[derive(Debug)]
 enum Expr {
-    Or(Vec<Expr>, usize),
+    Or(Vec<(Expr, WeightType)>, usize),
     Concat(Vec<Expr>),
     Optional(Box<Expr>, usize),
     Repetition(Box<Expr>, u32, u32, usize),
@@ -272,7 +307,7 @@ impl Expr {
             Self::Or(x, i) => {
                 let mut res = Some(0u64);
                 for (j, child) in x.iter().enumerate() {
-                    let sub_res = child.how_many(rules, mem, reachable);
+                    let sub_res = child.0.how_many(rules, mem, reachable);
                     let child_reachable = sub_res.map_or(true, |x| x > 0);
                     if !child_reachable {
                         reachable[*i][j] += 1;
@@ -350,7 +385,7 @@ fn fmt_w_name<'a>(
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match self {
-            Self::Or(x, _) => fmt_w_name("or", x.iter(), f)?,
+            Self::Or(x, _) => fmt_w_name("or", x.iter().map(|(e, _w)| e), f)?,
             Self::Concat(x) => fmt_w_name("concat", x.iter().rev(), f)?,
             Self::Optional(x, _) => write!(f, "option({})", x)?,
             Self::Repetition(x, min, max, _) => write!(f, "repeat({}, {}, {})", x, min, max)?,
@@ -381,7 +416,10 @@ impl Expr {
             ir::Expr::Or(x) => {
                 let child = x
                     .into_iter()
-                    .map(|e| Self::try_new(e, names, reachable))
+                    .map(|(e, w)| {
+                        let child_e = Self::try_new(e, names, reachable)?;
+                        Ok((child_e, w))
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 reachable.push(vec![0; child.len()]);
                 Self::Or(child, reachable.len() - 1)
@@ -920,6 +958,296 @@ mod tests {
         for depth in 1..=30 {
             let valid = success_count(&grammar, depth, 10);
             assert_eq!(valid, 10);
+        }
+    }
+}
+
+#[cfg(test)]
+mod probabilistic_grammar {
+    use super::*;
+
+    fn assert_grammar_branch_weights(grammar: &Grammar, expected_weights: &Vec<Vec<usize>>) {
+        assert_eq!(grammar.rules.len(), expected_weights.len());
+        for (rule, exp_w) in std::iter::zip(grammar.rules.iter(), expected_weights.into_iter()) {
+            assert!(matches!(rule, Expr::Or(_, _)));
+            if let Expr::Or(branches, _) = rule {
+                let branch_weights = branches.iter().map(|x| x.1).collect::<Vec<_>>();
+                assert_eq!(&branch_weights, exp_w);
+            }
+        }
+    }
+
+    #[test]
+    fn simple_parse_weighted() {
+        let grammar: Grammar = r#"
+            expr   : num                      @1
+                   | paren                    @ 2
+                   | expr symbol expr         @     3 ;
+            paren  : "(" expr symbol expr ")"@ 4 ;
+            symbol : r"-|\+|\*|÷"@5;
+            num    : r"[0-9]+"                @ 6 ;
+        "#
+        .parse()
+        .unwrap();
+
+        let expected_weights = vec![vec![1, 2, 3], vec![4], vec![5], vec![6]];
+        assert_grammar_branch_weights(&grammar, &expected_weights);
+    }
+
+    #[test]
+    fn reject_rule_names_start_with_number() {
+        let grammar1: Result<Grammar, _> = r#"
+            rule1: branch1 | branch2 | 3branch ;
+            branch1: "a";
+            branch2: "b";
+            3branch: "c";
+        "#
+        .parse();
+        assert!(grammar1.is_err());
+
+        let grammar2: Result<Grammar, _> = r#"
+            9rule: branch1 | branch2 | branch3 ;
+            branch1: "a";
+            branch2: "b";
+            branch3: "c";
+        "#
+        .parse();
+        assert!(grammar2.is_err());
+    }
+
+    #[test]
+    fn reject_number_in_between_concat() {
+        let grammar1: Result<Grammar, _> = r#"
+            rule1: branch1 314 branch2 | branch2 | branch3 ;
+            branch1: "a";
+            branch2: "b";
+            branch3: "c";
+        "#
+        .parse();
+        assert!(grammar1.is_err());
+
+        let grammar2: Result<Grammar, _> = r#"
+            rule1: branch1 branch2 | branch2 | branch3 ;
+            branch1: "a" "b" "c" 8 "d" 9;
+            branch2: "b";
+            branch3: "c";
+        "#
+        .parse();
+        assert!(grammar2.is_err());
+
+        let grammar2: Result<Grammar, _> = r#"
+            rule1: branch1 branch2 | branch2 | 0 branch3 ;
+            branch1: "a" "b" "c" "d";
+            branch2: "b";
+            branch3: "c";
+        "#
+        .parse();
+        assert!(grammar2.is_err());
+    }
+
+    #[test]
+    fn allow_leading_zero_weight() {
+        // Allow leading zeros to align with Rust's integer parsing behavior
+        let _grammar2: Grammar = r#"
+            expr   : num                      @ 1
+                   | paren                    @ 0002000
+                   | expr symbol expr         @ 3 ;
+            paren  : "(" expr symbol expr ")" @ 4 ;
+            symbol : r"-|\+|\*|÷"             @ 5 ;
+            num    : r"[0-9]+"                @ 6 ;
+        "#
+        .parse()
+        .unwrap();
+    }
+
+    #[test]
+    fn zero_weights_not_included() {
+        let grammar1: Grammar = r#"
+            expr   : num                      @ 1
+                   | paren                    @ 0
+                   | expr symbol expr         @ 3 ;
+            paren  : "(" expr symbol expr ")" @ 4 ;
+            symbol : r"-|\+|\*|÷"             @ 5 ;
+            num    : r"[0-9]+"                @ 6 ;
+        "#
+        .parse()
+        .unwrap();
+        let expected_weights1 = vec![vec![1, 3], vec![4], vec![5], vec![6]];
+        assert_grammar_branch_weights(&grammar1, &expected_weights1);
+
+        let grammar2: Grammar = r#"
+            rule1 : branch1         @ 0
+                  | branch1 branch1 @ 0
+                  | "a"             @ 766
+                  | branch1 "a"     @ 0   ;
+            branch1 : "b"           @ 1   ;
+        "#
+        .parse()
+        .unwrap();
+        let expected_weights2 = vec![vec![766], vec![1]];
+        assert_grammar_branch_weights(&grammar2, &expected_weights2);
+    }
+
+    #[test]
+    fn reject_total_weight_is_zero() {
+        let grammar1: Result<Grammar, _> = r#"
+            rule1 : branch1         @ 0
+                  | branch1 branch1 @ 0
+                  | "a"             @ 0
+                  | branch1 "a"     @ 0   ;
+            branch1 : "b"           @ 1   ;
+        "#
+        .parse();
+        assert!(grammar1.is_err());
+
+        let grammar2: Result<Grammar, _> = r#"
+            rule1 : branch1         @ 4
+                  | branch1 branch1 @ 3
+                  | "a"             @ 2
+                  | branch1 "a"     @ 1   ;
+            branch1 : "b"           @ 0   ;
+        "#
+        .parse();
+        assert!(grammar2.is_err());
+    }
+
+    #[test]
+    fn reject_negative_weight() {
+        let grammar1: Result<Grammar, _> = r#"
+            rule1 : branch1         @ 12
+                  | branch1 branch1 @ 234
+                  | "a"             @ 45
+                  | branch1 "a"     @ 881 ;
+            branch1 : "b"           @ -1  ;
+        "#
+        .parse();
+        assert!(grammar1.is_err());
+
+        let grammar2: Result<Grammar, _> = r#"
+            rule1 : branch1         @ 12
+                  | branch1 branch1 @ -234
+                  | "a"             @ 45
+                  | branch1 "a"     @ 881  ;
+            branch1 : "b"           @ 1    ;
+        "#
+        .parse();
+        assert!(grammar2.is_err());
+    }
+
+    #[test]
+    fn reject_mixed_weight_rule() {
+        // if part of a rule has assigned weights but another doesn't
+        let grammar1: Result<Grammar, _> = r#"
+            rule1 : branch1         @ 12
+                  | branch1 branch1
+                  | "a"             @ 45
+                  | branch1 "a"     @ 881 ;
+            branch1 : "b"           @ 1   ;
+        "#
+        .parse();
+        assert!(grammar1.is_err());
+
+        // but having one branch with weights and another branch without weights is ok
+        let grammar2: Grammar = r#"
+            rule1 : branch1         @ 12
+                  | branch1 branch1 @ 7645
+                  | "a"             @ 45
+                  | branch1 "a"     @ 881 ;
+            branch1 : "b"               ;
+        "#
+        .parse()
+        .unwrap();
+        assert_grammar_branch_weights(&grammar2, &vec![vec![12, 7645, 45, 881], vec![1]]);
+    }
+
+    #[test]
+    fn how_many_weighted() {
+        // non-zero probabilities should not affect how many, regardless of how "unlikely" that branch is to hit
+        let grammar: Grammar = r#"
+            expr   : num
+                   | paren
+                   | expr symbol expr ;
+            paren  : "(" expr symbol expr ")" ;
+            symbol : r"-|\+|\*|÷" ;
+            num    : r"[0-9]+" ;
+        "#
+        .parse()
+        .unwrap();
+
+        let prob_grammar: Grammar = r#"
+            expr   : num              @ 1
+                   | paren            @ 2
+                   | expr symbol expr @ 3 ;
+            paren  : "(" expr symbol expr ")" @ 4 ;
+            symbol : r"-|\+|\*|÷" @ 5 ;
+            num    : r"[0-9]+" @ 6 ;
+        "#
+        .parse()
+        .unwrap();
+
+        assert_eq!(grammar.how_many(None), prob_grammar.how_many(None));
+        for depth in 1..=100 {
+            assert_eq!(
+                grammar.how_many(Some(depth)),
+                prob_grammar.how_many(Some(depth))
+            );
+        }
+    }
+
+    #[test]
+    fn how_many_zero_weight() {
+        // branches with non-zero weight should get filtered out during parsing and thus not affect `how_many` calculations
+        let grammar: Grammar = r#"
+            expr   : num
+                   | paren
+                   | expr symbol expr ;
+            paren  : "(" expr symbol expr ")" ;
+            symbol : r"-|\+|\*|÷" ;
+            num    : r"[0-9]+" ;
+        "#
+        .parse()
+        .unwrap();
+
+        let prob_grammar: Grammar = r#"
+            expr   : num                      @ 1
+                   | paren                    @ 2
+                   | expr                     @ 0
+                   | expr symbol expr         @ 3 ;
+            paren  : "(" expr symbol expr ")" @ 4 ;
+            symbol : r"-|\+|\*|÷"             @ 5 ;
+            num    : r"[0-9]+"                @ 6 ;
+        "#
+        .parse()
+        .unwrap();
+
+        assert_eq!(grammar.how_many(None), prob_grammar.how_many(None));
+        for depth in 1..=100 {
+            assert_eq!(
+                grammar.how_many(Some(depth)),
+                prob_grammar.how_many(Some(depth))
+            );
+        }
+    }
+
+    #[test]
+    fn reject_non_u16_weight() {
+        let grammar: Result<Grammar, _> = r#"
+            rule1 : "a" @ 65535 ;
+        "#
+        .parse();
+        assert!(grammar.is_ok());
+
+        let grammar: Result<Grammar, _> = r#"
+            rule1 : "a" @ 65536 ;
+        "#
+        .parse();
+        assert!(grammar.is_err());
+        if let Err(e) = grammar {
+            assert!(
+                e.to_string().contains("can't parse weight to u16"),
+                "Error string: {}",
+                e
+            );
         }
     }
 }
